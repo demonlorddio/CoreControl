@@ -1,0 +1,81 @@
+{
+  "telegram": {
+    "bot_token": "8938893546:AAEMFoG3ky-CNu7uQ53gJwjQgw6i1aos630",
+    "whitelisted_user_ids": [7363883298],
+    "enable_hitl": true,
+    "hitl_timeout_seconds": 300
+  },
+  "failsafe": {
+    "enable_pyautogui_failsafe": true,
+    "failsafe_corner": "top-left"
+  },
+  "terminal": {
+    "whitelist": [
+      "ls", "dir", "cd", "pwd", "echo", "cat", "type",
+      "ps", "tasklist", "whoami", "date", "time",
+      "ping", "ipconfig", "ifconfig", "netstat",
+      "git status", "git log", "git diff", "git branch",
+      "npm --version", "node --version", "python --version",
+      "pip list", "conda list"
+    ],
+    "blacklist": [
+      "rm -rf", "del /s", "format", "fdisk", "mkfs",
+      "sudo rm", "sudo dd", "shutdown", "reboot",
+      "passwd", "useradd", "userdel", "chmod 777",
+      "chown root", "systemctl stop", "service stop",
+      "reg delete", "regedit", "gpedit.msc"
+    ],
+    "timeout_seconds": 30,
+    "max_output_length": 10000
+  },
+  "online_llm": {
+    "provider": "omni-route",
+    "api_key": "",
+    "api_base_url": "http://localhost:20128/v1",
+    "model": "auto",
+    "max_tokens": 4096,
+    "timeout_seconds": 60
+  },
+  "local_llm": {
+    "api_base_url": "http://localhost:11434",
+    "default_model": "qwen2.5-coder:7b",
+    "fallback_models": ["llama3.2", "codellama"],
+    "timeout_seconds": 60,
+    "max_tokens": 4096
+  },
+  "security": {
+    "require_confirmation_for_actions": [
+      "execute_terminal_command",
+      "click_coordinate",
+      "type_text"
+    ],
+    "auto_approve_safe_actions": [
+      "take_screenshot",
+      "get_system_stats"
+    ],
+    "screenshot_on_confirmation": true
+  },
+  "overlay": {
+    "opacity": 0.8,
+    "always_on_top": true,
+    "width": 200,
+    "height": 100,
+    "position": {
+      "x": 100,
+      "y": 100
+    }
+  },
+  "audio": {
+    "sample_rate": 16000,
+    "channels": 1,
+    "vad_threshold": 0.5,
+    "min_silence_duration_ms": 1000,
+    "transcription_model": "base.en"
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "logs/corecontrol.log",
+    "max_file_size_mb": 10,
+    "backup_count": 5
+  }
+}

@@ -1,0 +1,897 @@
+<title>CoreControl</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap">
+
+<style>
+  /* ── Token system ───────────────────────────────────────────────────── */
+  :root {
+    --bg:          #0d0f12;
+    --bg-card:     #13171c;
+    --bg-elevated: #1a1f26;
+    --border:      rgba(255,255,255,0.07);
+    --border-med:  rgba(255,255,255,0.13);
+
+    --text-primary:   #e8eaf0;
+    --text-secondary: #8c9ab0;
+    --text-muted:     #556070;
+
+    --accent:      #3ef0a8;   /* teal-mint — system "alive" colour */
+    --accent-dim:  rgba(62,240,168,0.12);
+    --accent-glow: rgba(62,240,168,0.35);
+
+    --warn:   #f0a83e;
+    --danger: #f05a3e;
+    --info:   #3ea8f0;
+
+    --radius-sm: 4px;
+    --radius:    8px;
+    --radius-lg: 14px;
+
+    --mono: 'IBM Plex Mono', 'Cascadia Code', monospace;
+    --sans: 'IBM Plex Sans', system-ui, sans-serif;
+  }
+
+  /* Light theme */
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg:          #f2f4f7;
+      --bg-card:     #ffffff;
+      --bg-elevated: #eaecf0;
+      --border:      rgba(0,0,0,0.06);
+      --border-med:  rgba(0,0,0,0.11);
+      --text-primary:   #111318;
+      --text-secondary: #4a5568;
+      --text-muted:     #8a96a8;
+      --accent-dim:  rgba(10,180,110,0.10);
+      --accent-glow: rgba(10,180,110,0.25);
+      --accent:      #00a86b;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg:          #f2f4f7;
+    --bg-card:     #ffffff;
+    --bg-elevated: #eaecf0;
+    --border:      rgba(0,0,0,0.06);
+    --border-med:  rgba(0,0,0,0.11);
+    --text-primary:   #111318;
+    --text-secondary: #4a5568;
+    --text-muted:     #8a96a8;
+    --accent-dim:  rgba(10,180,110,0.10);
+    --accent-glow: rgba(10,180,110,0.25);
+    --accent:      #00a86b;
+  }
+  :root[data-theme="dark"] {
+    --bg:          #0d0f12;
+    --bg-card:     #13171c;
+    --bg-elevated: #1a1f26;
+    --border:      rgba(255,255,255,0.07);
+    --border-med:  rgba(255,255,255,0.13);
+    --text-primary:   #e8eaf0;
+    --text-secondary: #8c9ab0;
+    --text-muted:     #556070;
+    --accent:      #3ef0a8;
+    --accent-dim:  rgba(62,240,168,0.12);
+    --accent-glow: rgba(62,240,168,0.35);
+  }
+
+  /* ── Reset ──────────────────────────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text-primary);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre { font-family: var(--mono); }
+
+  /* ── Layout ─────────────────────────────────────────────────────────── */
+  .page { max-width: 960px; margin: 0 auto; padding: 0 24px 80px; }
+
+  /* ── Hero ───────────────────────────────────────────────────────────── */
+  .hero {
+    padding: 72px 0 56px;
+    border-bottom: 1px solid var(--border);
+    position: relative;
+  }
+  .hero-eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .hero-eyebrow::before {
+    content: '';
+    display: inline-block;
+    width: 20px; height: 1px;
+    background: var(--accent);
+  }
+  .hero h1 {
+    font-family: var(--mono);
+    font-size: clamp(36px, 6vw, 60px);
+    font-weight: 600;
+    letter-spacing: -.02em;
+    line-height: 1.1;
+    color: var(--text-primary);
+    margin-bottom: 20px;
+  }
+  .hero h1 span { color: var(--accent); }
+  .hero-sub {
+    font-size: 17px;
+    font-weight: 300;
+    color: var(--text-secondary);
+    max-width: 560px;
+    line-height: 1.65;
+    margin-bottom: 36px;
+  }
+  .badge-row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .badge {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 500;
+    padding: 4px 10px;
+    border-radius: 100px;
+    border: 1px solid var(--border-med);
+    color: var(--text-secondary);
+    background: var(--bg-elevated);
+    letter-spacing: .04em;
+  }
+  .badge.green { border-color: var(--accent-glow); color: var(--accent); background: var(--accent-dim); }
+
+  /* ── Section heading ─────────────────────────────────────────────────── */
+  .section { padding: 52px 0 0; }
+  .section-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 24px;
+  }
+  h2 {
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 16px;
+    text-wrap: balance;
+  }
+  p { color: var(--text-secondary); font-size: 15px; line-height: 1.7; }
+
+  /* ── Architecture diagram ────────────────────────────────────────────── */
+  .arch-diagram {
+    margin-top: 28px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+  }
+  .arch-canvas-wrap { padding: 32px; display: flex; justify-content: center; }
+  canvas#arch { display: block; max-width: 100%; }
+
+  /* ── Module grid ─────────────────────────────────────────────────────── */
+  .module-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 16px;
+    margin-top: 28px;
+  }
+  .module-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 24px;
+    transition: border-color .2s;
+  }
+  .module-card:hover { border-color: var(--border-med); }
+  .module-card.highlight { border-color: var(--accent-glow); }
+  .module-icon {
+    font-size: 22px;
+    margin-bottom: 12px;
+    display: block;
+  }
+  .module-title {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 6px;
+  }
+  .module-path {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+  }
+  .module-desc {
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+  }
+  .module-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+  .tag {
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 2px 7px;
+    border-radius: 100px;
+    background: var(--bg-elevated);
+    color: var(--text-muted);
+    letter-spacing: .03em;
+  }
+  .tag.g { color: var(--accent); background: var(--accent-dim); }
+  .tag.y { color: var(--warn); background: rgba(240,168,62,0.10); }
+  .tag.r { color: var(--danger); background: rgba(240,90,62,0.10); }
+  .tag.b { color: var(--info); background: rgba(62,168,240,0.10); }
+
+  /* ── HITL flow ───────────────────────────────────────────────────────── */
+  .hitl-flow {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin-top: 28px;
+    position: relative;
+  }
+  .hitl-flow::before {
+    content: '';
+    position: absolute;
+    left: 19px; top: 30px; bottom: 30px;
+    width: 1px;
+    background: var(--border-med);
+  }
+  .hitl-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+    padding: 16px 0;
+    position: relative;
+  }
+  .hitl-num {
+    flex-shrink: 0;
+    width: 38px; height: 38px;
+    border-radius: 50%;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-med);
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    z-index: 1;
+  }
+  .hitl-num.active {
+    background: var(--accent-dim);
+    border-color: var(--accent-glow);
+    color: var(--accent);
+  }
+  .hitl-body { flex: 1; padding-top: 8px; }
+  .hitl-body strong {
+    display: block;
+    font-size: 14px;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+  }
+  .hitl-body p { font-size: 13px; }
+  .decision-row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .decision {
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 5px 12px;
+    border-radius: 6px;
+    border: 1px solid;
+    font-weight: 500;
+  }
+  .decision.approve { border-color: var(--accent-glow); color: var(--accent); background: var(--accent-dim); }
+  .decision.edit    { border-color: rgba(240,168,62,.35); color: var(--warn); background: rgba(240,168,62,.08); }
+  .decision.deny    { border-color: rgba(240,90,62,.35);  color: var(--danger); background: rgba(240,90,62,.08); }
+
+  /* ── File tree ───────────────────────────────────────────────────────── */
+  .file-tree {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 24px;
+    margin-top: 28px;
+    overflow-x: auto;
+  }
+  .tree-line {
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 2;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .tree-line .indent { color: var(--border-med); }
+  .tree-line .fname  { color: var(--text-primary); }
+  .tree-line .fname.dir { color: var(--text-secondary); font-weight: 500; }
+  .tree-line .fname.entry { color: var(--accent); }
+  .tree-line .comment { color: var(--text-muted); font-size: 11px; }
+
+  /* ── Setup steps ─────────────────────────────────────────────────────── */
+  .steps { display: flex; flex-direction: column; gap: 12px; margin-top: 28px; }
+  .step {
+    display: grid;
+    grid-template-columns: 44px 1fr;
+    gap: 16px;
+    align-items: start;
+  }
+  .step-n {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent);
+    padding-top: 3px;
+  }
+  .step-body strong {
+    display: block;
+    font-size: 14px;
+    color: var(--text-primary);
+    margin-bottom: 6px;
+  }
+  .step-body p { font-size: 13px; }
+  .cmd {
+    display: block;
+    margin-top: 8px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--accent);
+    background: var(--accent-dim);
+    border: 1px solid var(--accent-glow);
+    border-radius: var(--radius-sm);
+    padding: 8px 12px;
+    overflow-x: auto;
+    white-space: pre;
+  }
+
+  /* ── Security table ──────────────────────────────────────────────────── */
+  .sec-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-top: 28px;
+  }
+  @media (max-width: 600px) { .sec-grid { grid-template-columns: 1fr; } }
+  .sec-item {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 18px 20px;
+  }
+  .sec-item .label {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .08em;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .sec-item p { font-size: 13px; }
+
+  /* ── Online/offline pill ─────────────────────────────────────────────── */
+  .engine-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-top: 28px;
+  }
+  @media (max-width: 560px) { .engine-row { grid-template-columns: 1fr; } }
+  .engine-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 24px;
+  }
+  .engine-card .mode {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .engine-card .mode::before {
+    content: '';
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+  }
+  .engine-card.online .mode { color: var(--accent); }
+  .engine-card.online .mode::before { background: var(--accent); box-shadow: 0 0 6px var(--accent-glow); }
+  .engine-card.offline .mode { color: var(--warn); }
+  .engine-card.offline .mode::before { background: var(--warn); }
+  .engine-card h3 { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+  .engine-card ul { padding-left: 18px; }
+  .engine-card li { font-size: 13px; color: var(--text-secondary); line-height: 1.7; }
+
+  /* ── Footer ──────────────────────────────────────────────────────────── */
+  .footer {
+    margin-top: 72px;
+    padding-top: 28px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .footer p { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
+  .status-dot {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: var(--mono); font-size: 12px; color: var(--accent);
+  }
+  .status-dot::before {
+    content: '';
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent-glow);
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: .3; }
+  }
+
+  /* ── Responsive ──────────────────────────────────────────────────────── */
+  @media (max-width: 640px) {
+    .hero { padding: 48px 0 40px; }
+    .module-grid { grid-template-columns: 1fr; }
+  }
+</style>
+
+<div class="page">
+
+  <!-- Hero -->
+  <header class="hero">
+    <div class="hero-eyebrow">AI Desktop Assistant</div>
+    <h1>Core<span>Control</span></h1>
+    <p class="hero-sub">
+      A secure, locally-hosted AI daemon that connects Telegram and voice input to your machine
+      via a custom MCP server, OS automation hooks, and an online/offline reasoning engine.
+    </p>
+    <div class="badge-row">
+      <span class="badge green">v1.0.0</span>
+      <span class="badge">Python 3.11+</span>
+      <span class="badge">MCP 2.0</span>
+      <span class="badge">Claude API</span>
+      <span class="badge">Ollama offline</span>
+      <span class="badge">PyQt6 overlay</span>
+      <span class="badge">Windows · macOS · Linux</span>
+    </div>
+  </header>
+
+  <!-- Architecture -->
+  <section class="section">
+    <div class="section-label">System Architecture</div>
+    <h2>How it fits together</h2>
+    <p>All modules are connected through the orchestrator. The MCP server runs as a subprocess over stdio JSON-RPC. HITL gating intercepts risky tool calls before they reach the OS.</p>
+    <div class="arch-diagram">
+      <div class="arch-canvas-wrap">
+        <canvas id="arch" width="840" height="320"></canvas>
+      </div>
+    </div>
+  </section>
+
+  <!-- Modules -->
+  <section class="section">
+    <div class="section-label">Source Modules</div>
+    <h2>What each file does</h2>
+    <div class="module-grid">
+
+      <div class="module-card highlight">
+        <span class="module-icon">🧠</span>
+        <div class="module-title">orchestrator.py</div>
+        <div class="module-path">src/orchestrator.py</div>
+        <p class="module-desc">Core agentic loop. Takes a screenshot, selects online or offline engine, runs tool calls through HITL gating, and loops until no more tool calls are needed.</p>
+        <div class="module-tags">
+          <span class="tag g">central</span>
+          <span class="tag">asyncio</span>
+          <span class="tag">Claude API</span>
+          <span class="tag">Ollama</span>
+        </div>
+      </div>
+
+      <div class="module-card">
+        <span class="module-icon">⚙️</span>
+        <div class="module-title">server.py</div>
+        <div class="module-path">src/mcp_server/server.py</div>
+        <p class="module-desc">stdio MCP server exposing five tools: screenshot, click, type_text, system stats, and terminal execution. Validates commands against the whitelist before any subprocess call.</p>
+        <div class="module-tags">
+          <span class="tag b">MCP 2.0</span>
+          <span class="tag">pyautogui</span>
+          <span class="tag">mss</span>
+          <span class="tag">psutil</span>
+        </div>
+      </div>
+
+      <div class="module-card">
+        <span class="module-icon">📡</span>
+        <div class="module-title">telegram_bot.py</div>
+        <div class="module-path">src/bridge/telegram_bot.py</div>
+        <p class="module-desc">Long-poll Telegram gateway. Handles text, photos, and OGG voice. Intercepts high-risk tool calls with inline keyboard confirmation cards — Approve, Edit, or Deny.</p>
+        <div class="module-tags">
+          <span class="tag y">HITL</span>
+          <span class="tag">python-telegram-bot</span>
+          <span class="tag">multi-modal</span>
+        </div>
+      </div>
+
+      <div class="module-card">
+        <span class="module-icon">🪟</span>
+        <div class="module-title">overlay.py</div>
+        <div class="module-path">src/gui/overlay.py</div>
+        <p class="module-desc">Frameless, translucent PyQt6 window that floats above all others. Draggable via mouse. Shows a pulsing indicator when the microphone is active.</p>
+        <div class="module-tags">
+          <span class="tag">PyQt6</span>
+          <span class="tag">always-on-top</span>
+          <span class="tag">draggable</span>
+        </div>
+      </div>
+
+      <div class="module-card">
+        <span class="module-icon">🎙️</span>
+        <div class="module-title">audio_recorder.py</div>
+        <div class="module-path">src/gui/audio_recorder.py</div>
+        <p class="module-desc">Background thread capturing mic input via sounddevice. Energy-based VAD detects speech boundaries. Passes complete utterances to faster-whisper for fully offline transcription.</p>
+        <div class="module-tags">
+          <span class="tag g">offline</span>
+          <span class="tag">VAD</span>
+          <span class="tag">Whisper</span>
+          <span class="tag">sounddevice</span>
+        </div>
+      </div>
+
+      <div class="module-card">
+        <span class="module-icon">🌐</span>
+        <div class="module-title">network.py</div>
+        <div class="module-path">src/utils/network.py</div>
+        <p class="module-desc">Async connectivity monitor probing three DNS hosts. Caches status and fires a state-change log when the network toggles online or offline, triggering engine selection in the orchestrator.</p>
+        <div class="module-tags">
+          <span class="tag">async</span>
+          <span class="tag">polling</span>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- Online / Offline engines -->
+  <section class="section">
+    <div class="section-label">LLM Engine Selection</div>
+    <h2>Online / offline fallback</h2>
+    <p>The orchestrator checks network state before every prompt cycle and routes to the appropriate engine transparently.</p>
+    <div class="engine-row">
+      <div class="engine-card online">
+        <div class="mode">Online</div>
+        <h3>Claude API</h3>
+        <ul>
+          <li>claude-opus-5 with Vision</li>
+          <li>Screenshot sent as base64 JPEG</li>
+          <li>Native tool-use JSON schema</li>
+          <li>Multi-turn conversation history</li>
+        </ul>
+      </div>
+      <div class="engine-card offline">
+        <div class="mode">Offline</div>
+        <h3>Ollama (local)</h3>
+        <ul>
+          <li>qwen2.5-coder:7b (default)</li>
+          <li>pytesseract OCR for screen reading</li>
+          <li>TOOL_CALL: prefix parsing</li>
+          <li>Falls back through model list on failure</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- HITL -->
+  <section class="section">
+    <div class="section-label">Security · HITL Middleware</div>
+    <h2>Human-in-the-Loop approval flow</h2>
+    <p>High-risk tool calls are intercepted before execution. The orchestrator pauses and waits up to 300 s for a decision over Telegram.</p>
+    <div class="hitl-flow">
+      <div class="hitl-step">
+        <div class="hitl-num active">1</div>
+        <div class="hitl-body">
+          <strong>Orchestrator flags tool call</strong>
+          <p>execute_terminal_command, click_coordinate, or type_text triggers the HITL filter.</p>
+        </div>
+      </div>
+      <div class="hitl-step">
+        <div class="hitl-num active">2</div>
+        <div class="hitl-body">
+          <strong>Confirmation card sent</strong>
+          <p>Tool name, JSON arguments preview, and a live screenshot are dispatched to all whitelisted Telegram user IDs.</p>
+        </div>
+      </div>
+      <div class="hitl-step">
+        <div class="hitl-num active">3</div>
+        <div class="hitl-body">
+          <strong>User decides</strong>
+          <div class="decision-row">
+            <span class="decision approve">✅ Approve</span>
+            <span class="decision edit">✏️ Edit args</span>
+            <span class="decision deny">❌ Deny</span>
+          </div>
+        </div>
+      </div>
+      <div class="hitl-step">
+        <div class="hitl-num">4</div>
+        <div class="hitl-body">
+          <strong>Orchestrator resumes or aborts</strong>
+          <p>Approved → MCP tool executes. Edited → user's modified JSON used. Denied → error injected into LLM context window.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- File tree -->
+  <section class="section">
+    <div class="section-label">File Structure</div>
+    <h2>Repository layout</h2>
+    <div class="file-tree">
+      <div class="tree-line"><span class="fname dir">corecontrol/</span></div>
+      <div class="tree-line"><span class="indent">├── </span><span class="fname dir">config/</span></div>
+      <div class="tree-line"><span class="indent">│&nbsp;&nbsp; └── </span><span class="fname entry">settings.json</span><span class="comment"> — tokens, whitelists, emergency controls</span></div>
+      <div class="tree-line"><span class="indent">├── </span><span class="fname dir">src/</span></div>
+      <div class="tree-line"><span class="indent">│&nbsp;&nbsp; ├── </span><span class="fname dir">bridge/</span></div>
+      <div class="tree-line"><span class="indent">│&nbsp;&nbsp; │&nbsp;&nbsp; └── </span><span class="fname entry">telegram_bot.py</span><span class="comment"> — gateway + HITL middleware</span></div>
+      <div class="tree-line"><span class="indent">│&nbsp;&nbsp; ├── </span><span class="fname dir">gui/</span></div>
+      <div class="tree-line"><span class="indent">│&nbsp;&nbsp; │&nbsp;&nbsp; ├── </span><span class="fname entry">overlay.py</span><span class="comment"> — translucent PyQt6 floating overlay</span></div>
+      <div class="tree-line"><span class="indent">│&nbsp;&nbsp; │&nbsp;&nbsp; └── </span><span class="fname entry">audio_recorder.py</span><span class="comment"> — VAD + offline Whisper transcription</span></div>
+      <div class="tree-line"><span class="indent">│&nbsp;&nbsp; ├── </span><span class="fname dir">mcp_server/</span></div>
+      <div class="tree-line"><span class="indent">│&nbsp;&nbsp; │&nbsp;&nbsp; └── </span><span class="fname entry">server.py</span><span class="comment"> — local stdio MCP server</span></div>
+      <div class="tree-line"><span class="indent">│&nbsp;&nbsp; ├── </span><span class="fname entry">orchestrator.py</span><span class="comment"> — agentic loop + engine fallback</span></div>
+      <div class="tree-line"><span class="indent">│&nbsp;&nbsp; └── </span><span class="fname dir">utils/</span></div>
+      <div class="tree-line"><span class="indent">│&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; └── </span><span class="fname entry">network.py</span><span class="comment"> — async connectivity monitor</span></div>
+      <div class="tree-line"><span class="indent">├── </span><span class="fname entry">main.py</span><span class="comment"> — unified entry point (Telegram + overlay + orchestrator)</span></div>
+      <div class="tree-line"><span class="indent">├── </span><span class="fname">requirements.txt</span></div>
+      <div class="tree-line"><span class="indent">└── </span><span class="fname">README.md</span><span class="comment"> — platform setup (Windows, macOS, Linux/Wayland)</span></div>
+    </div>
+  </section>
+
+  <!-- Setup -->
+  <section class="section">
+    <div class="section-label">Quick Start</div>
+    <h2>Get running in five steps</h2>
+    <div class="steps">
+      <div class="step">
+        <div class="step-n">01</div>
+        <div class="step-body">
+          <strong>Create a virtual environment and install dependencies</strong>
+          <code class="cmd">python -m venv .venv
+.venv\Scripts\activate          # Windows
+pip install -r requirements.txt</code>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-n">02</div>
+        <div class="step-body">
+          <strong>Set your Telegram bot token and user ID in config/settings.json</strong>
+          <p>Get a token from <a href="https://t.me/BotFather">@BotFather</a>. Get your numeric ID from <a href="https://t.me/userinfobot">@userinfobot</a>.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-n">03</div>
+        <div class="step-body">
+          <strong>Export your Anthropic API key (online mode)</strong>
+          <code class="cmd">set ANTHROPIC_API_KEY=sk-ant-...</code>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-n">04</div>
+        <div class="step-body">
+          <strong>Pull a model and start Ollama (offline mode)</strong>
+          <code class="cmd">ollama pull qwen2.5-coder:7b
+ollama serve</code>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-n">05</div>
+        <div class="step-body">
+          <strong>Launch CoreControl</strong>
+          <code class="cmd">python main.py            # full daemon (Telegram + overlay)
+python -m src.orchestrator # interactive REPL only</code>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Security -->
+  <section class="section">
+    <div class="section-label">Security Model</div>
+    <h2>Defence in depth</h2>
+    <div class="sec-grid">
+      <div class="sec-item">
+        <div class="label">Telegram auth</div>
+        <p>All messages from non-whitelisted user IDs are silently dropped before reaching the orchestrator.</p>
+      </div>
+      <div class="sec-item">
+        <div class="label">Command whitelist</div>
+        <p>execute_terminal_command validates against a prefix whitelist and an explicit blacklist before any subprocess call.</p>
+      </div>
+      <div class="sec-item">
+        <div class="label">HITL gating</div>
+        <p>click_coordinate, type_text, and terminal commands require human approval. Auto-deny on timeout.</p>
+      </div>
+      <div class="sec-item">
+        <div class="label">PyAutoGUI failsafe</div>
+        <p>Moving the mouse to the top-left corner of the screen aborts all active automation immediately.</p>
+      </div>
+      <div class="sec-item">
+        <div class="label">Stderr-only logging</div>
+        <p>The MCP server writes all diagnostics to stderr. stdout is reserved for JSON-RPC transport — mixing them corrupts the protocol.</p>
+      </div>
+      <div class="sec-item">
+        <div class="label">Subprocess sandbox</div>
+        <p>A configurable timeout (default 30 s) limits how long any shell command can run. Output is capped at 10 000 characters.</p>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <p>CoreControl &mdash; local AI desktop daemon</p>
+    <span class="status-dot">system built</span>
+  </footer>
+
+</div>
+
+<script>
+// ── Architecture diagram (Canvas) ──────────────────────────────────────────
+(function () {
+  const canvas = document.getElementById('arch');
+  if (!canvas) return;
+
+  function draw() {
+    const dpr = window.devicePixelRatio || 1;
+    const W = canvas.parentElement.clientWidth || 840;
+    const H = 320;
+    canvas.width  = W * dpr;
+    canvas.height = H * dpr;
+    canvas.style.width  = W + 'px';
+    canvas.style.height = H + 'px';
+
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+
+    // Theme-aware colours
+    const style = getComputedStyle(document.documentElement);
+    const accent   = style.getPropertyValue('--accent').trim()   || '#3ef0a8';
+    const bgCard   = style.getPropertyValue('--bg-elevated').trim() || '#1a1f26';
+    const border   = style.getPropertyValue('--border-med').trim() || 'rgba(255,255,255,0.13)';
+    const txtPri   = style.getPropertyValue('--text-primary').trim()   || '#e8eaf0';
+    const txtSec   = style.getPropertyValue('--text-secondary').trim() || '#8c9ab0';
+    const warn     = style.getPropertyValue('--warn').trim() || '#f0a83e';
+    const info     = style.getPropertyValue('--info').trim() || '#3ea8f0';
+
+    ctx.clearRect(0, 0, W, H);
+
+    // Helper: rounded rect
+    function rrect(x, y, w, h, r, fill, stroke) {
+      ctx.beginPath();
+      ctx.roundRect(x, y, w, h, r);
+      if (fill)   { ctx.fillStyle = fill;   ctx.fill(); }
+      if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 1; ctx.stroke(); }
+    }
+
+    // Helper: centred text
+    function ctext(text, x, y, color, size, weight) {
+      ctx.font = `${weight||400} ${size||12}px 'IBM Plex Mono', monospace`;
+      ctx.fillStyle = color;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, x, y);
+    }
+
+    // Helper: arrow (horizontal)
+    function arrow(x1, y, x2, color) {
+      ctx.beginPath();
+      ctx.moveTo(x1, y); ctx.lineTo(x2, y);
+      ctx.strokeStyle = color; ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.stroke(); ctx.setLineDash([]);
+      const d = x2 > x1 ? 1 : -1;
+      ctx.beginPath();
+      ctx.moveTo(x2, y);
+      ctx.lineTo(x2 - d*7, y - 4);
+      ctx.lineTo(x2 - d*7, y + 4);
+      ctx.closePath();
+      ctx.fillStyle = color; ctx.fill();
+    }
+
+    // Helper: vertical arrow
+    function varrow(x, y1, y2, color) {
+      ctx.beginPath();
+      ctx.moveTo(x, y1); ctx.lineTo(x, y2);
+      ctx.strokeStyle = color; ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.stroke(); ctx.setLineDash([]);
+      const d = y2 > y1 ? 1 : -1;
+      ctx.beginPath();
+      ctx.moveTo(x, y2);
+      ctx.lineTo(x - 4, y2 - d*7);
+      ctx.lineTo(x + 4, y2 - d*7);
+      ctx.closePath();
+      ctx.fillStyle = color; ctx.fill();
+    }
+
+    const scale = W / 840;
+    function s(v) { return v * scale; }
+
+    // ── Nodes ──────────────────────────────────────────────────────────
+    // Row 1: inputs
+    rrect(s(20),  s(20), s(120), s(48), 8, bgCard, border);
+    ctext('Telegram', s(80),  s(40), txtSec, 11);
+    ctext('/ Voice', s(80), s(53), txtSec, 10);
+
+    rrect(s(700), s(20), s(120), s(48), 8, bgCard, border);
+    ctext('Claude API', s(760), s(37), info, 11);
+    ctext('(online)', s(760), s(51), txtSec, 10);
+
+    rrect(s(700), s(82), s(120), s(48), 8, bgCard, border);
+    ctext('Ollama', s(760), s(99), warn, 11);
+    ctext('(offline)', s(760), s(113), txtSec, 10);
+
+    // Centre: orchestrator
+    rrect(s(310), s(110), s(220), s(60), 10, bgCard, accent);
+    ctext('orchestrator.py', s(420), s(133), txtPri, 12, 600);
+    ctext('perception · plan · act', s(420), s(151), txtSec, 10);
+
+    // HITL box
+    rrect(s(310), s(210), s(220), s(52), 8, bgCard, warn);
+    ctext('HITL Filter', s(420), s(229), warn, 11, 600);
+    ctext('approve / edit / deny', s(420), s(246), txtSec, 10);
+
+    // MCP server
+    rrect(s(310), s(10), s(220), s(80), 10, bgCard, info);
+    ctext('MCP Server (stdio)', s(420), s(32), info, 11, 600);
+    ctext('screenshot · click · type', s(420), s(50), txtSec, 10);
+    ctext('stats · terminal', s(420), s(65), txtSec, 10);
+
+    // OS box
+    rrect(s(560), s(200), s(100), s(70), 8, bgCard, border);
+    ctext('Host OS', s(610), s(228), txtPri, 11, 600);
+    ctext('pyautogui', s(610), s(245), txtSec, 9);
+    ctext('subprocess', s(610), s(258), txtSec, 9);
+
+    // Network monitor
+    rrect(s(140), s(110), s(120), s(48), 8, bgCard, border);
+    ctext('network.py', s(200), s(129), txtSec, 10);
+    ctext('online / offline', s(200), s(143), txtSec, 9);
+
+    // ── Arrows ─────────────────────────────────────────────────────────
+    arrow(s(140), s(44), s(310), s(44), accent);          // telegram → orch (top)
+    arrow(s(530), s(140), s(700), s(105), accent);        // orch → Claude/Ollama
+    varrow(s(420), s(90), s(110), accent);                // MCP ↔ orch
+    varrow(s(420), s(170), s(210), warn);                 // orch → HITL
+    arrow(s(530), s(236), s(560), s(236), warn);          // HITL → OS
+    arrow(s(260), s(134), s(310), s(134), border);        // network → orch
+
+    // ── Legend ──────────────────────────────────────────────────────────
+    const lx = s(20), ly = s(280);
+    ctx.font = '10px IBM Plex Mono, monospace';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+
+    [[accent, 'data flow'], [warn, 'HITL gated'], [info, 'LLM / cloud']].forEach(([c, label], i) => {
+      const x = lx + i * s(140);
+      ctx.beginPath(); ctx.moveTo(x, ly); ctx.lineTo(x + 24, ly);
+      ctx.strokeStyle = c; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.fillStyle = txtSec; ctx.fillText(label, x + 30, ly);
+    });
+  }
+
+  draw();
+  window.addEventListener('resize', draw);
+
+  // Redraw if theme changes
+  const mo = new MutationObserver(draw);
+  mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
+})();
+</script>

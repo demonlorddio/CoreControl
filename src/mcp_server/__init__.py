@@ -1,0 +1,1 @@
+# CoreControl MCP server package
