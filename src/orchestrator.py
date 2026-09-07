@@ -11,6 +11,7 @@ import json
 import logging
 import sys
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
@@ -81,6 +82,7 @@ class LocalMCPClient:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=1024 * 1024,  # 1MB buffer for large tool responses
         )
         self._reader_task = asyncio.create_task(self._read_loop(), name="mcp-reader")
         # Send initialize
@@ -231,12 +233,13 @@ class OnlineEngine:
         response_text = choice.message.content or ""
 
         tool_calls = []
-        # Handle tool_calls attribute (may not exist in all OpenAI-compatible APIs)
-        raw_tool_calls = getattr(choice, 'tool_calls', None) or []
+        # Handle tool_calls on message object (OpenAI-compatible APIs)
+        raw_tool_calls = getattr(choice.message, 'tool_calls', None) or []
         for tc in raw_tool_calls:
             try:
                 import json as _json
-                input_args = _json.loads(tc.function.arguments)
+                args_str = tc.function.arguments if hasattr(tc.function, 'arguments') else ""
+                input_args = _json.loads(args_str) if args_str else {}
             except (json.JSONDecodeError, AttributeError):
                 input_args = {}
             tool_calls.append({
@@ -421,6 +424,14 @@ class HITLFilter:
 
 # ── Main Orchestrator ─────────────────────────────────────────────────────────
 
+@dataclass
+class ProcessResult:
+    """Result from process_prompt containing text response and any attachments."""
+    text: str
+    screenshots: list[bytes] = field(default_factory=list)
+    web_links: list[str] = field(default_factory=list)
+
+
 class Orchestrator:
     """
     Central agentic loop for CoreControl.
@@ -462,18 +473,18 @@ class Orchestrator:
             logger.error("Could not fetch MCP tool list: %s", exc)
             return []
 
-    async def process_prompt(self, prompt: str, user_id: Optional[int] = None) -> str:
+    async def process_prompt(self, prompt: str, user_id: Optional[int] = None) -> ProcessResult:
         """
         Full perception → plan → act → verify cycle for a single prompt.
-        Returns a human-readable response string.
+        Returns a ProcessResult with text response and any attachments (screenshots, links).
         """
         logger.info("Processing prompt: %r (user=%s)", prompt[:80], user_id)
 
         # 1. Take an initial screenshot to capture current visual state
-        screenshot_b64: Optional[str] = None
+        initial_screenshot: Optional[str] = None
         try:
             ss_result = await self._mcp.call_tool("take_screenshot", {})
-            screenshot_b64 = ss_result.get("image_base64")
+            initial_screenshot = ss_result.get("image_base64")
         except Exception as exc:
             logger.warning("Initial screenshot failed: %s", exc)
 
@@ -485,22 +496,33 @@ class Orchestrator:
             logger.info("Using OFFLINE engine (Ollama)")
             engine = self._offline_engine
 
+        # Collect output artifacts
+        collected_screenshots: list[bytes] = []
+        collected_links: list[str] = []
+
         # 3. Agentic loop — up to 10 iterations
         final_response = ""
+        current_screenshot_b64: Optional[str] = initial_screenshot
         for iteration in range(10):
             try:
                 response_text, tool_calls = await engine.process(
                     prompt=prompt,
-                    screenshot_b64=screenshot_b64 if iteration == 0 else None,
+                    screenshot_b64=current_screenshot_b64 if iteration == 0 else None,
                     tool_definitions=self._tool_definitions,
                     conversation_history=self._history,
                 )
             except Exception as exc:
                 logger.error("Engine error on iteration %d: %s", iteration, exc)
-                return f"❌ Engine error: {exc}"
+                return ProcessResult(text=f"❌ Engine error: {exc}")
 
             if response_text:
                 final_response = response_text
+
+            # Extract links from response text
+            if response_text:
+                import re
+                urls = re.findall(r'https?://[^\s<>"\')]+' , response_text)
+                collected_links.extend(urls)
 
             if not tool_calls:
                 # No more tool calls — cycle complete
@@ -513,7 +535,7 @@ class Orchestrator:
                 tool_args = tc.get("input", {})
 
                 approved, final_args = await self._hitl.check(
-                    tool_name, tool_args, screenshot_b64
+                    tool_name, tool_args, current_screenshot_b64
                 )
 
                 if not approved:
@@ -526,6 +548,24 @@ class Orchestrator:
                 try:
                     result = await self._mcp.call_tool(tool_name, final_args)
                     tool_results.append({"tool": tool_name, "result": result})
+
+                    # Extract screenshot from result
+                    if tool_name == "take_screenshot":
+                        img_b64 = result.get("image_base64")
+                        if img_b64:
+                            try:
+                                img_bytes = base64.b64decode(img_b64)
+                                collected_screenshots.append(img_bytes)
+                            except Exception:
+                                pass
+                    elif tool_name == "web_navigate":
+                        web_content = result.get("content", "")
+                        if web_content:
+                            # Extract any links from web content
+                            import re as re_mod
+                            found_urls = re_mod.findall(r'https?://[^\s<>"\')]+' , str(web_content))
+                            collected_links.extend(found_urls)
+
                     logger.debug("Tool %s returned: %s", tool_name, str(result)[:120])
                 except MCPToolError as exc:
                     tool_results.append({"tool": tool_name, "error": str(exc)})
@@ -533,7 +573,14 @@ class Orchestrator:
             # 5. Post-action screenshot for closed-loop visual verification
             try:
                 ss_result = await self._mcp.call_tool("take_screenshot", {})
-                screenshot_b64 = ss_result.get("image_base64")
+                img_b64 = ss_result.get("image_base64")
+                if img_b64:
+                    try:
+                        img_bytes = base64.b64decode(img_b64)
+                        collected_screenshots.append(img_bytes)
+                        current_screenshot_b64 = img_b64
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
@@ -553,7 +600,21 @@ class Orchestrator:
         if len(self._history) > 40:
             self._history = self._history[-40:]
 
-        return final_response or "✅ Action completed."
+        text = final_response or "✅ Action completed."
+
+        # Deduplicate links
+        seen_links = set()
+        unique_links = []
+        for link in collected_links:
+            if link not in seen_links:
+                seen_links.add(link)
+                unique_links.append(link)
+
+        return ProcessResult(
+            text=text,
+            screenshots=collected_screenshots,
+            web_links=unique_links,
+        )
 
     def clear_history(self) -> None:
         self._history.clear()

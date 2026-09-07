@@ -129,6 +129,46 @@ class TelegramGateway:
 
     # ── Message handlers ──────────────────────────────────────────────────────
 
+    async def _send_text_with_attachments(self, chat_id: int, text: str,
+                                          screenshots: list[bytes] = None,
+                                          web_links: list[str] = None) -> None:
+        """Send text response along with any screenshots or links."""
+        if screenshots is None:
+            screenshots = []
+        if web_links is None:
+            web_links = []
+
+        # Send screenshots first
+        for i, img_bytes in enumerate(screenshots):
+            try:
+                caption = text if i == 0 and text else None
+                await self._app.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=io.BytesIO(img_bytes),
+                    caption=caption,
+                )
+            except Exception as exc:
+                logger.error("Failed to send screenshot: %s", exc)
+
+        # Send text if not already sent with screenshots
+        if not screenshots and text:
+            await self._send_reply(chat_id, text)
+        elif screenshots and text and not any(screenshots):
+            # Text already sent with first screenshot
+            pass
+
+        # Send web links separately
+        if web_links:
+            link_text = "🔗 Links found:\n" + "\n".join(f"<a href='{l}'>{l}</a>" for l in web_links)
+            try:
+                await self._app.bot.send_message(
+                    chat_id=chat_id,
+                    text=link_text,
+                    parse_mode="HTML",
+                )
+            except Exception as exc:
+                logger.error("Failed to send links: %s", exc)
+
     async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user = update.effective_user
         chat_id = update.effective_chat.id
@@ -147,8 +187,16 @@ class TelegramGateway:
 
         await self._send_reply(chat_id, "⏳ Processing your request…")
         try:
-            response = await self._on_prompt(prompt, user.id)
-            await self._send_reply(chat_id, response or "✅ Done.")
+            from ..orchestrator import ProcessResult
+            result = await self._on_prompt(prompt, user.id)
+
+            if isinstance(result, ProcessResult):
+                await self._send_text_with_attachments(
+                    chat_id, result.text, result.screenshots, result.web_links
+                )
+            else:
+                # Backward compatibility for old-style string returns
+                await self._send_reply(chat_id, result or "✅ Done.")
         except Exception as exc:
             logger.exception("Error processing prompt")
             await self._send_reply(chat_id, f"❌ Error: {exc}")
@@ -172,8 +220,16 @@ class TelegramGateway:
         logger.info("Photo from user %d (caption: %r)", user.id, caption[:80])
         await self._send_reply(update.effective_chat.id, "⏳ Analysing image…")
         try:
-            response = await self._on_prompt(prompt, user.id)
-            await self._send_reply(update.effective_chat.id, response or "✅ Done.")
+            from ..orchestrator import ProcessResult
+            result = await self._on_prompt(prompt, user.id)
+
+            if isinstance(result, ProcessResult):
+                await self._send_text_with_attachments(
+                    update.effective_chat.id, result.text,
+                    result.screenshots, result.web_links
+                )
+            else:
+                await self._send_reply(update.effective_chat.id, result or "✅ Done.")
         except Exception as exc:
             logger.exception("Error processing image")
             await self._send_reply(update.effective_chat.id, f"❌ Error: {exc}")
@@ -198,8 +254,16 @@ class TelegramGateway:
                 update.effective_chat.id,
                 f"📝 Transcribed: _{transcript}_",
             )
-            response = await self._on_prompt(transcript, user.id)
-            await self._send_reply(update.effective_chat.id, response or "✅ Done.")
+            from ..orchestrator import ProcessResult
+            result = await self._on_prompt(transcript, user.id)
+
+            if isinstance(result, ProcessResult):
+                await self._send_text_with_attachments(
+                    update.effective_chat.id, result.text,
+                    result.screenshots, result.web_links
+                )
+            else:
+                await self._send_reply(update.effective_chat.id, result or "✅ Done.")
         except Exception as exc:
             logger.exception("Error processing voice")
             await self._send_reply(update.effective_chat.id, f"❌ Transcription error: {exc}")

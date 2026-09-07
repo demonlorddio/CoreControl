@@ -100,7 +100,10 @@ async def _start_telegram(orchestrator) -> None:
         from src.bridge.telegram_bot import TelegramGateway
 
         async def handle_prompt(prompt: str, user_id: int) -> str:
-            return await orchestrator.process_prompt(prompt, user_id=user_id)
+            from src.orchestrator import ProcessResult
+            result = await orchestrator.process_prompt(prompt, user_id=user_id)
+            # Return just the text for the gateway to handle
+            return result.text if isinstance(result, ProcessResult) else result
 
         gateway = TelegramGateway(on_prompt=handle_prompt)
         # Attach gateway to orchestrator's HITL filter

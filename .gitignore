@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+*.log
+logs/
+*.jpg
+*.png
+*.png
+.DS_Store
+node_modules/
+.env
+config/settings.json
