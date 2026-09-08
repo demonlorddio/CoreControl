@@ -1,6 +1,7 @@
 """Fish Audio TTS engine with Japanese translation fallback."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import threading
