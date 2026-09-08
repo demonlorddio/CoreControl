@@ -190,7 +190,7 @@ class FishAudioTTS:
         self._current_task.start()
 
     def _generate_or_get_audio(self, text: str, cache_file: Path) -> Optional[bytes]:
-        """Generate TTS audio or return cached version."""
+        """Generate TTS audio or return cached version. Falls back to pyttsx3 on API failure."""
         # Check cache
         if cache_file.exists():
             logger.debug("Using cached audio: %s", cache_file.name)
@@ -220,7 +220,38 @@ class FishAudioTTS:
             return audio_data
 
         except Exception as e:
-            logger.error("TTS generation failed: %s", e)
+            logger.warning("Fish Audio API failed (%s), falling back to pyttsx3", e)
+            return self._fallback_generate_audio(text, cache_file)
+
+    def _fallback_generate_audio(self, text: str, cache_file: Path) -> Optional[bytes]:
+        """Fallback TTS using local pyttsx3 engine."""
+        try:
+            import pyttsx3
+            temp_path = str(self._cache_dir / f"_pyttsx_{hash(text) & 0xFFFFFFFF:08x}.mp3")
+
+            engine = pyttsx3.init()
+            # Try to select a good voice
+            voices = engine.getProperty("voices")
+            if voices:
+                # Prefer male voice for Great Sage persona
+                for voice in voices:
+                    if "male" in voice.name.lower() or "david" in voice.name.lower():
+                        engine.setProperty("voice", voice.id)
+                        break
+
+            engine.setProperty("rate", 150)
+            engine.save_to_file(text, temp_path)
+            engine.runAndWait()
+
+            if os.path.exists(temp_path):
+                audio_data = Path(temp_path).read_bytes()
+                cache_file.write_bytes(audio_data)
+                logger.info("Fallback pyttsx3 generated %d bytes for: %s", len(audio_data), text[:30])
+                return audio_data
+            return None
+
+        except Exception as e:
+            logger.error("pyttsx3 fallback failed: %s", e)
             return None
 
     def stop(self) -> None:

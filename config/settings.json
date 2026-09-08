@@ -65,8 +65,8 @@
     "transcription_model": "base.en"
   },
   "fish_audio": {
-    "api_key": "",
-    "model_id": "2c8b612163a24831b0db6675ff4ebb9b",
+    "api_key": "sk-fish-TPSF6hf8o6xUTJ2YilyIgL0ntfMikkQxQ50FyhTVtQQ",
+    "model_id": "4c82a14548dc4b3e8d7dda68c9756c90",
     "language": "en"
   },
   "logging": {

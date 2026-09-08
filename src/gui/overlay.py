@@ -776,7 +776,7 @@ class OverlayWidget(QWidget):
                     logger.error("Fish Audio session not available")
                     return
 
-                # Generate audio
+                # Generate audio (uses pyttsx3 fallback if Fish Audio fails)
                 audio_data = self._fish_tts._generate_or_get_audio(
                     text_to_speak,
                     self._fish_tts._cache_dir / f"{hash(text_to_speak) & 0xFFFFFFFF:08x}.mp3"
