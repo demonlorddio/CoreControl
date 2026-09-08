@@ -188,37 +188,13 @@ class GreatSageAvatar(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         cx, cy = 40, 45 + self._bounce_offset
-        st = self._state
 
-        # ── Image ────────────────────────────────────────────────────────
+        # ── Image only (no glow overlay to avoid GIF flickering) ─────────
         if not self._current_frame.isNull():
             img_rect = self._current_frame.rect()
             draw_x = int(cx - img_rect.width() / 2)
             draw_y = int(cy - img_rect.height() / 2)
             p.drawPixmap(draw_x, draw_y, self._current_frame)
-
-        # ── Aura / glow (always drawn on top) ────────────────────────────
-        if st == NPCState.LISTENING:
-            pulse = 0.3 + 0.15 * math.sin(self._processing_spin * 3)
-            glow = QColor(80, 160, 255)
-            glow.setAlphaF(pulse)
-        elif st == NPCState.PROCESSING:
-            pulse = 0.35 + 0.2 * abs(math.sin(self._processing_spin * 2))
-            glow = QColor(int(100 + 100 * math.sin(self._processing_spin)),
-                          180, 255)
-            glow.setAlphaF(pulse)
-        elif st == NPCState.SPEAKING:
-            glow = QColor(100, 200, 255)
-            glow.setAlphaF(0.3)
-        else:
-            glow = QColor(60, 140, 200)
-            glow.setAlphaF(0.2)
-
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
-        p.setBrush(glow)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.drawEllipse(int(cx - 30), int(cy - 30), 60, 60)
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
 
         # ── State indicator dot ──────────────────────────────────────────
         body_bot = cy + 28
@@ -801,7 +777,7 @@ class OverlayWidget(QWidget):
         act_quit.setShortcut("Q")
         act_quit.triggered.connect(self._do_quit)
 
-        menu.exec(self._ctrl_btn.mapToGlobal(self._ctrl_btn.rect().bottomLeft()))
+        menu.exec(self.mapToGlobal(QPoint(10, 90)))
 
     def _do_hide(self) -> None:
         self.hide()
@@ -823,11 +799,8 @@ class OverlayWidget(QWidget):
     # ── Paint ─────────────────────────────────────────────────────────────────
 
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        # Gradient background
-        from PyQt6.QtGui import QLinearGradient
+        # Transparent background — no box behind the avatar
+        pass
         grad = QLinearGradient(0, 0, 0, self.height())
         grad.setColorAt(0, QColor(15, 25, 40, 190))
         grad.setColorAt(1, QColor(8, 14, 24, 140))
