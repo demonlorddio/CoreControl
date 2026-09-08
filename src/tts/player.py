@@ -1,19 +1,39 @@
-"""Audio player using QtMultimedia for MP3/WAV playback."""
+"""Audio player — automatic fallback to pygame-ce when QtMultimedia is unavailable."""
 from __future__ import annotations
 
 import logging
 import tempfile
+import threading
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import QUrl
-from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
-
 logger = logging.getLogger(__name__)
 
-# Singleton player instance (Qt requires one per thread)
+try:
+    from PyQt6.QtCore import QUrl
+    from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+    _QT_AVAILABLE = True
+except Exception:
+    _QT_AVAILABLE = False
+
 _player: Optional[QMediaPlayer] = None
 _output: Optional[QAudioOutput] = None
+_use_pygame = False
+
+
+def _try_qt() -> bool:
+    """Check if QtMultimedia can actually create a playable player."""
+    if not _QT_AVAILABLE:
+        return False
+    try:
+        from PyQt6.QtMultimedia import QMediaDevices
+        if len(QMediaDevices.audioOutputs()) == 0:
+            return False
+        # Actually try to create a player — this is what fails on missing plugins
+        QMediaPlayer()
+        return True
+    except Exception:
+        return False
 
 
 def get_player() -> tuple[QMediaPlayer, QAudioOutput]:
@@ -38,83 +58,100 @@ def _on_playback_state(state):
     logger.debug("Audio playback: %s", states.get(state, str(state)))
 
 
+def _try_pygame() -> bool:
+    """Check if pygame-ce mixer is available."""
+    try:
+        import pygame
+        return pygame.mixer.get_init() is not None
+    except Exception:
+        return False
+
+
+def _init_pygame() -> None:
+    """Initialize pygame mixer if needed."""
+    try:
+        import pygame
+        if not pygame.mixer.get_init():
+            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+    except Exception:
+        pass
+
+
 class AudioPlayer:
-    """Singleton audio player for MP3/WAV playback."""
+    """Audio player — auto-detects QtMultimedia vs pygame-ce at startup."""
 
     def __init__(self):
-        self._player, self._output = get_player()
-        self._is_playing = False
+        global _use_pygame
+        # Determine engine once at first instantiation
+        if not _use_pygame:
+            if _try_qt():
+                self._player, self._output = get_player()
+                self._is_playing = False
+            else:
+                _use_pygame = True
+                _init_pygame()
+                self._player = None
+                self._output = None
+                self._is_playing = False
 
     def play_audio(self, audio_data: bytes) -> bool:
         """
         Play audio from bytes (MP3 or WAV).
-        Tries QtMultimedia first, falls back to pygame if Qt backend is unavailable.
         Returns True if playback started successfully.
         """
-        # Write to temp file (needed by both Qt and pygame)
+        if not audio_data:
+            return False
+
+        # Write to temp file
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
             f.write(audio_data)
             temp_path = f.name
 
-        # Try QtMultimedia first
+        def cleanup():
+            try:
+                Path(temp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
         try:
-            self._player.setSource(QUrl.fromLocalFile(temp_path))
-            self._output.setVolume(0.8)  # 80% volume
-            self._player.play()
-            self._is_playing = True
-
-            # Clean up temp file after playback
-            def cleanup():
-                try:
-                    Path(temp_path).unlink(missing_ok=True)
-                except Exception:
-                    pass
-
-            self._player.mediaStatusChanged.connect(
-                lambda status: cleanup() if status == QMediaPlayer.MediaStatus.EndOfMedia else None
-            )
-
-            logger.debug("Playing audio via QtMultimedia: %d bytes", len(audio_data))
-            return True
-
-        except Exception as qt_err:
-            logger.warning("QtMultimedia failed (%s), falling back to pygame", qt_err)
-
-        # Fallback: pygame (works without Qt multimedia backend)
-        try:
-            import pygame
-            pygame.mixer.init()
-            pygame.mixer.music.load(temp_path)
-            pygame.mixer.music.set_volume(0.8)
-            pygame.mixer.music.play()
-            self._is_playing = True
-            logger.debug("Playing audio via pygame: %d bytes", len(audio_data))
-
-            # Clean up after playback
-            def cleanup():
-                try:
-                    Path(temp_path).unlink(missing_ok=True)
-                except Exception:
-                    pass
-
-            # Schedule cleanup ~2s after play starts (approx duration)
-            import threading
-            threading.Timer(2.0, cleanup).start()
-            return True
+            if _use_pygame:
+                import pygame
+                _init_pygame()
+                pygame.mixer.music.load(temp_path)
+                pygame.mixer.music.set_volume(0.8)
+                pygame.mixer.music.play()
+                self._is_playing = True
+                logger.debug("Playing audio via pygame: %d bytes", len(audio_data))
+                # Estimate duration (~4KB/s for speech MP3, min 2s)
+                duration_sec = max(len(audio_data) / 4096, 2.0)
+                threading.Timer(duration_sec + 0.5, cleanup).start()
+                return True
+            else:
+                self._player.setSource(QUrl.fromLocalFile(temp_path))
+                self._output.setVolume(0.8)
+                self._player.play()
+                self._is_playing = True
+                self._player.mediaStatusChanged.connect(
+                    lambda status: cleanup() if status == QMediaPlayer.MediaStatus.EndOfMedia else None
+                )
+                logger.debug("Playing audio via QtMultimedia: %d bytes", len(audio_data))
+                return True
 
         except Exception as e:
             logger.error("Failed to play audio: %s", e)
             self._is_playing = False
-            # Cleanup temp file on failure
-            Path(temp_path).unlink(missing_ok=True)
+            cleanup()
             return False
 
     def stop(self) -> None:
         """Stop current playback."""
         try:
-            self._player.stop()
+            if _use_pygame:
+                import pygame
+                pygame.mixer.music.stop()
+            elif self._player:
+                self._player.stop()
             self._is_playing = False
-            logger.debug("Audio playback stopped")
         except Exception as e:
             logger.warning("Error stopping audio: %s", e)
 
@@ -124,20 +161,33 @@ class AudioPlayer:
 
     @classmethod
     def stop_all(cls) -> None:
-        """Class method to stop all playback (singleton pattern)."""
-        global _player
-        if _player:
-            _player.stop()
+        """Class method to stop all playback."""
+        try:
+            if _use_pygame:
+                import pygame
+                pygame.mixer.music.stop()
+            elif _player:
+                _player.stop()
+        except Exception:
+            pass
 
 
 def play_audio_from_file(filepath: str) -> bool:
     """Play audio from a file path."""
-    player, output = get_player()
     try:
-        player.setSource(QUrl.fromLocalFile(filepath))
-        output.setVolume(0.8)
-        player.play()
-        return True
+        if _use_pygame:
+            import pygame
+            _init_pygame()
+            pygame.mixer.music.load(filepath)
+            pygame.mixer.music.set_volume(0.8)
+            pygame.mixer.music.play()
+            return True
+        else:
+            player, output = get_player()
+            player.setSource(QUrl.fromLocalFile(filepath))
+            output.setVolume(0.8)
+            player.play()
+            return True
     except Exception as e:
         logger.error("Failed to play %s: %s", filepath, e)
         return False
