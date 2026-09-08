@@ -48,15 +48,16 @@ class AudioPlayer:
     def play_audio(self, audio_data: bytes) -> bool:
         """
         Play audio from bytes (MP3 or WAV).
+        Tries QtMultimedia first, falls back to pygame if Qt backend is unavailable.
         Returns True if playback started successfully.
         """
-        try:
-            # Write to temp file
-            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-                f.write(audio_data)
-                temp_path = f.name
+        # Write to temp file (needed by both Qt and pygame)
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            f.write(audio_data)
+            temp_path = f.name
 
-            # Load and play
+        # Try QtMultimedia first
+        try:
             self._player.setSource(QUrl.fromLocalFile(temp_path))
             self._output.setVolume(0.8)  # 80% volume
             self._player.play()
@@ -73,12 +74,39 @@ class AudioPlayer:
                 lambda status: cleanup() if status == QMediaPlayer.MediaStatus.EndOfMedia else None
             )
 
-            logger.debug("Playing audio: %d bytes", len(audio_data))
+            logger.debug("Playing audio via QtMultimedia: %d bytes", len(audio_data))
+            return True
+
+        except Exception as qt_err:
+            logger.warning("QtMultimedia failed (%s), falling back to pygame", qt_err)
+
+        # Fallback: pygame (works without Qt multimedia backend)
+        try:
+            import pygame
+            pygame.mixer.init()
+            pygame.mixer.music.load(temp_path)
+            pygame.mixer.music.set_volume(0.8)
+            pygame.mixer.music.play()
+            self._is_playing = True
+            logger.debug("Playing audio via pygame: %d bytes", len(audio_data))
+
+            # Clean up after playback
+            def cleanup():
+                try:
+                    Path(temp_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+            # Schedule cleanup ~2s after play starts (approx duration)
+            import threading
+            threading.Timer(2.0, cleanup).start()
             return True
 
         except Exception as e:
             logger.error("Failed to play audio: %s", e)
             self._is_playing = False
+            # Cleanup temp file on failure
+            Path(temp_path).unlink(missing_ok=True)
             return False
 
     def stop(self) -> None:
