@@ -1,316 +1,197 @@
-# CoreControl — AI Desktop Assistant
+# CoreControl — Great Sage Desktop Companion
 
-**CoreControl** is a secure, AI-powered desktop assistant that runs locally as a background Python daemon. It connects a Telegram remote interface and local voice input to your machine using a custom MCP (Model Context Protocol) server, OS automation hooks, and an online/offline reasoning engine.
-
----
-
-## Architecture Overview
+A fully local, self-contained AI desktop companion featuring an animated NPC overlay, voice control, and system-level tool access via the Model Context Protocol (MCP).
 
 ```
-Telegram / Voice Input
-        │
-        ▼
-  orchestrator.py  ◄──── Online: Claude API (cloud)
-        │                Offline: Ollama (local LLM)
-        ▼
-  HITL Filter  ──► Telegram confirmation card
-        │
-        ▼
-  MCP Server (stdio)
-        │
-  ┌─────┴──────┐
-  │ screenshot │ click │ type │ stats │ terminal │
-  └────────────┘
-        │
-  PyAutoGUI / mss / psutil / subprocess
-        ▼
-    Host OS
+        ╭─────────────────────────────────╮
+        │  🧙  "Notice, Master. All        │
+        │     systems operational."        │
+        │                                  │
+        │        ●●●  ◉  ●●●               │
+        │       ╱     ╲                    │
+        │      │ Great │                   │
+        │       ╲     ╱                    │
+        │         ●                         │
+        ╰─────────────────────────────────╯
 ```
 
----
+## Features
 
-## Directory Structure
-
-```
-corecontrol/
-├── config/
-│   └── settings.json           # Config, whitelists, emergency controls
-├── src/
-│   ├── bridge/
-│   │   └── telegram_bot.py     # Telegram gateway + HITL middleware
-│   ├── gui/
-│   │   ├── overlay.py          # Translucent PyQt6 floating overlay
-│   │   └── audio_recorder.py   # Microphone VAD + offline transcription
-│   ├── mcp_server/
-│   │   └── server.py           # Local stdio MCP server
-│   ├── orchestrator.py         # Agentic perception loop + LLM fallback
-│   └── utils/
-│       └── network.py          # Connectivity monitor
-├── requirements.txt
-└── README.md
-```
-
----
+- **Animated NPC companion** — Floating, draggable, always-on-top widget with idle/listening/processing/speaking states
+- **Voice activation** — Press `Ctrl+Space` (or right-click the companion) to speak; transcribed via offline Whisper
+- **System control** — 13 MCP tools: screenshots, mouse control, keyboard input, terminal commands, web browsing
+- **Human-In-The-Loop** — Local on-screen confirmation modals for high-risk actions (click, type, terminal)
+- **Online/offline fallback** — OmniRoute (local AI gateway) → Ollama → OCR fallback
+- **Great Sage persona** — All responses follow the analytical, authoritative tone of the Great Sage from *Tensura*
 
 ## Quick Start
 
-### 1. Install dependencies
-
 ```bash
-python -m venv .venv
-
-# Windows
-.venv\Scripts\activate
-
-# macOS / Linux
-source .venv/bin/activate
-
+# 1. Install dependencies
 pip install -r requirements.txt
-```
 
-### 2. Configure settings
+# 2. Start OmniRoute (self-hosted AI gateway) on port 20128
+#    https://github.com/diegosouzapw/OmniRoute
 
-Edit `config/settings.json`:
+# 3. (Optional) Start Ollama for offline fallback
+ollama serve
 
-```json
-{
-  "telegram": {
-    "bot_token": "<YOUR_BOT_TOKEN>",
-    "whitelisted_user_ids": [123456789]
-  },
-  "local_llm": {
-    "api_base_url": "http://localhost:11434",
-    "default_model": "qwen2.5-coder:7b"
-  }
-}
-```
-
-**Get your bot token**: Message [@BotFather](https://t.me/BotFather) on Telegram, run `/newbot`, and copy the token.  
-**Get your user ID**: Message [@userinfobot](https://t.me/userinfobot).
-
-### 3. Set the Anthropic API key (online mode)
-
-```bash
-# Windows
-set ANTHROPIC_API_KEY=sk-ant-...
-
-# macOS / Linux
-export ANTHROPIC_API_KEY=sk-ant-...
-```
-
-### 4. Install and start Ollama (offline mode)
-
-Download from [ollama.com](https://ollama.com), then:
-
-```bash
-ollama pull qwen2.5-coder:7b
-ollama serve          # starts on http://localhost:11434
-```
-
-### 5. Run CoreControl
-
-**Interactive REPL (no Telegram)**:
-```bash
-python -m src.orchestrator
-```
-
-**With Telegram + overlay**:
-```bash
+# 4. Launch CoreControl
 python main.py
 ```
 
----
+## Controls
 
-## Platform Setup
+| Input | Action |
+|-------|--------|
+| `Ctrl+Space` | Start voice capture |
+| Right-click companion | Start voice capture |
+| Left-click + drag | Reposition companion |
+| Close window / `Escape` | Exit |
+
+## Architecture
+
+```
+main.py                    PyQt6 overlay thread
+    │                            │
+    ├── Orchestrator ──────▶ GreatSageAvatar
+    │   (async loop)              (NPC renderer)
+    │        │                          │
+    │        ├── OnlineEngine ──▶ OmniRoute (:20128)
+    │        │                        (OpenAI-compatible)
+    │        ├── OfflineEngine ──▶ Ollama (:11434)
+    │        │                        (qwen2.5-coder:7b)
+    │        ├── HITLFilter ──▶ Local modal dialogs
+    │        └── LocalMCPClient ──▶ MCP server (stdio)
+    │                                      │
+    ├── AudioRecorder ──▶ faster-whisper  └── 13 system tools
+    └── HotkeyTrigger ──▶ pynput          (screenshot, click, type,
+                                          terminal, web browsing)
+```
+
+## MCP Tools (13)
+
+| Tool | Risk | Description |
+|------|------|-------------|
+| `take_screenshot` | ✅ Safe | Capture screen as base64 JPEG |
+| `get_system_stats` | ✅ Safe | CPU, RAM, disk, battery, processes |
+| `click_coordinate` | ⚠️ High | Click mouse at (x, y) — HITL required |
+| `type_text` | ⚠️ High | Type text at cursor — HITL required |
+| `execute_terminal_command` | ⚠️ High | Run shell command — HITL + whitelist |
+| `web_navigate` | ✅ Safe | Navigate browser to URL |
+| `web_click` | ✅ Safe | Click element by CSS selector |
+| `web_type` | ✅ Safe | Type into input field |
+| `web_get_text` | ✅ Safe | Extract page text content |
+| `web_screenshot` | ✅ Safe | Screenshot of web page |
+| `web_fetch` | ✅ Safe | Raw HTTP fetch (no JS) |
+| `web_go_back` | ✅ Safe | Browser back navigation |
+| `web_evaluate` | ✅ Safe | Execute JavaScript in page |
+
+## Configuration
+
+Edit `config/settings.json` (copy from `config/settings.json.example`):
+
+| Section | Key | Description |
+|---------|-----|-------------|
+| `online_llm` | `api_base_url` | OmniRoute endpoint (`http://localhost:20128/v1`) |
+| `online_llm` | `model` | Model name (`"auto"` uses gateway default) |
+| `local_llm` | `api_base_url` | Ollama endpoint (`http://localhost:11434`) |
+| `local_llm` | `default_model` | Primary offline model |
+| `security` | `require_confirmation_for_actions` | Tools needing HITL approval |
+| `audio` | `transcription_model` | Whisper model (`"base.en"`, `"small.en"`) |
+| `overlay` | `position` | Initial (x, y) placement |
+
+## Platform Permissions
 
 ### Windows
 
-PyAutoGUI works without extra configuration on Windows.
+- PyAutoGUI fail-safe: move mouse to top-left corner to abort any action
+- No special permissions required for screenshot capture (mss library)
+- Terminal commands run under your user account with the configured whitelist/blacklist
 
-For `pytesseract` (offline OCR fallback):
-1. Download [Tesseract-OCR installer](https://github.com/UB-Mannheim/tesseract/wiki).
-2. Add the install path to `PATH`, or set:
-   ```python
-   pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-   ```
+### macOS
 
-For `sounddevice`, install PortAudio:
+- **Microphone access**: Grant via System Settings → Privacy & Security → Microphone
+- **Accessibility access**: Required for PyAutoGUI mouse/keyboard control
+  - Go to System Settings → Privacy & Security → Accessibility
+  - Add your Python interpreter (or Terminal.app / VS Code)
+- **Screen recording**: Required for screenshot capture
+  - System Settings → Privacy & Security → Screen Recording
+
+### Linux (X11)
+
+- PyAutoGUI works natively on X11
+- Microphone: ensure your user is in the `audio` group
+  ```bash
+  sudo usermod -aG audio $USER
+  ```
+- For `xdotool`-based input emulation (if needed):
+  ```bash
+  sudo apt install xdotool xte
+  ```
+
+### Linux (Wayland)
+
+Wayland restricts direct input simulation. Two approaches:
+
+**Option A: udev rule for `/dev/uinput`** (requires root):
 ```bash
-pip install sounddevice
-# PortAudio is bundled in the Windows wheel — no extra steps.
-```
-
----
-
-### macOS — Quartz & Assistive Technology Permissions
-
-macOS requires explicit permission grants before synthetic input events or screen capture work.
-
-#### Screen Recording (mss / screenshots)
-1. Open **System Settings → Privacy & Security → Screen & System Audio Recording**.
-2. Click **+** and add your terminal application (e.g., Terminal, iTerm2, VS Code).
-3. Restart the terminal.
-
-#### Accessibility / Input Control (PyAutoGUI)
-1. Open **System Settings → Privacy & Security → Accessibility**.
-2. Click **+** and add your terminal (or Python binary).
-3. If running from a virtual environment: add `.venv/bin/python` explicitly.
-
-#### Quartz Event Services (advanced)
-Low-level keystroke injection uses Apple's `Quartz Event Services` (Carbon API).  
-Install the `pyobjc` bridge if needed:
-```bash
-pip install pyobjc-framework-Quartz
-```
-
-Verify access is granted:
-```bash
-python -c "import pyautogui; pyautogui.position()"
-# Should print cursor coordinates without raising PermissionError.
-```
-
----
-
-### Linux — Wayland Input
-
-Wayland's security model blocks traditional `XTEST`/`xdotool` input injection. Two options:
-
-#### Option A — Wayland Portal (`wdotool`)
-
-`wdotool` communicates through Wayland's **XDG RemoteDesktop portal** using the `libei` input-emulation protocol.
-
-```bash
-# Arch
-sudo pacman -S wdotool
-
-# Build from source
-git clone https://github.com/mctechnology17/wdotool
-cd wdotool && mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make && sudo make install
-```
-
-Required libraries:
-```bash
-sudo apt install libwayland-client0 libxkbcommon-dev libeis-dev
-```
-
-Usage:
-```bash
-wdotool type "hello world"
-wdotool click 1          # left click
-wdotool mousemove 500 300
-```
-
-Grant RemoteDesktop portal access when prompted by your compositor (GNOME, KDE, etc.).
-
-#### Option B — `/dev/uinput` Kernel Driver
-
-The Linux kernel's `uinput` module lets you create a virtual input device with full root-equivalent capabilities.
-
-**1. Load the module:**
-```bash
-sudo modprobe uinput
-
-# Auto-load on boot
-echo 'uinput' | sudo tee /etc/modules-load.d/uinput.conf
-```
-
-**2. Configure udev permissions:**
-```bash
-sudo tee /etc/udev/rules.d/99-uinput.rules <<'EOF'
+# Create udev rule
+sudo tee /etc/udev/rules.d/99-uinput.rules << 'EOF'
 KERNEL=="uinput", GROUP="uinput", MODE="0660"
 EOF
+
+# Add your user to the uinput group
+sudo usermod -aG uinput $USER
+
+# Reload udev rules
 sudo udevadm control --reload-rules
 sudo udevadm trigger
-```
 
-**3. Add your user to the `uinput` group:**
+# Verify
+ls -la /dev/uinput
+```
+Then set `failsafe.enable_pyautogui_failsafe: false` in settings.json.
+
+**Option B: `wdotool` (Wayland compositor tool)**
 ```bash
-sudo groupadd -f uinput
-sudo usermod -aG uinput $USER
-# Log out and back in, then verify:
-groups $USER   # should include 'uinput'
-```
+# Install dependencies
+sudo apt install libwayland-client0 libxkbcommon0
+pip install wdotool
 
-**4. Install the Python `uinput` library:**
+# Configure to use wdotool instead of pyautogui
+```
+Note: wdotool support requires compositor-specific configuration. Check your Wayland compositor's documentation (Sway, Hyprland, etc.).
+
+## Great Sage Persona
+
+The orchestrator enforces a consistent persona derived from the Great Sage's unique skill from *Tales of the Abyss* / *That Time I Got Reincarnated as a Slime*:
+
+- **Tone**: Calm, analytical, authoritative, robotic precision
+- **Address**: User is always "Master"
+- **Prefixes**: Responses begin with "Notice.", "Report.", "Analysis completed.", or "Proposed execution path."
+- **Style**: Concise, logical, no hedging — every word carries weight
+
+## Security
+
+- Terminal commands are filtered through an explicit whitelist/blacklist
+- High-risk tools (click, type, terminal) require local confirmation via modal dialog
+- PyAutoGUI fail-safe is enabled by default (move mouse to top-left corner to abort)
+- Config file containing API keys is excluded from git via `.gitignore`
+
+## Development
+
 ```bash
-pip install python-uinput
+# Run in dev mode with verbose logging
+PYTHONIOENCODING=utf-8 python -m src.main
+
+# Run MCP server standalone (for testing)
+python src/mcp_server/server.py
+
+# Run orchestrator interactive REPL
+python -m src.orchestrator
 ```
 
-#### X11 fallback (non-Wayland)
+## License
 
-On X11 sessions, PyAutoGUI works natively. Ensure `xdotool` is installed for any shell-level automation:
-```bash
-sudo apt install xdotool
-```
-
----
-
-## Configuration Reference
-
-`config/settings.json` controls all runtime behaviour:
-
-| Key | Description |
-|-----|-------------|
-| `telegram.bot_token` | Telegram bot token from @BotFather |
-| `telegram.whitelisted_user_ids` | List of numeric Telegram user IDs allowed to control the assistant |
-| `telegram.enable_hitl` | Enable Human-In-The-Loop confirmation for risky actions |
-| `telegram.hitl_timeout_seconds` | Seconds to wait for HITL decision before auto-denying (default: 300) |
-| `failsafe.enable_pyautogui_failsafe` | Move mouse to top-left corner to abort all actions |
-| `terminal.whitelist` | Command prefixes that are allowed to execute |
-| `terminal.blacklist` | Command fragments that are always blocked |
-| `terminal.timeout_seconds` | Max seconds a shell command may run (default: 30) |
-| `local_llm.api_base_url` | Ollama server URL (default: `http://localhost:11434`) |
-| `local_llm.default_model` | Primary model for offline mode |
-| `security.require_confirmation_for_actions` | Tools that require HITL approval |
-| `security.auto_approve_safe_actions` | Tools that run without confirmation |
-| `audio.vad_threshold` | RMS energy threshold for voice activity detection (0.0–1.0) |
-| `audio.transcription_model` | Whisper model size: `tiny`, `base.en`, `small`, `medium` |
-
----
-
-## Human-In-The-Loop (HITL) Flow
-
-When CoreControl is about to execute a high-risk action (e.g., run a terminal command, click, or type), it:
-
-1. Pauses execution.
-2. Sends a confirmation card to your Telegram chat with:
-   - Tool name and arguments.
-   - A screenshot of the current screen state.
-3. Waits for your decision via inline keyboard:
-   - **✅ Approve** — executes exactly as planned.
-   - **✏️ Edit** — prompts you to send modified JSON arguments, then executes.
-   - **❌ Deny** — cancels the action and sends an error back to the orchestrator.
-
-Configure which tools require HITL in `security.require_confirmation_for_actions`.
-
----
-
-## Security Notes
-
-- **Whitelist is enforced server-side** in the MCP layer — commands are validated before any `subprocess` call.
-- **Telegram authentication** silently drops all messages from non-whitelisted user IDs.
-- **PyAutoGUI fail-safe** is enabled by default — moving the mouse to the top-left corner aborts all active automation.
-- The MCP server writes **all logs to `stderr`** — `stdout` is reserved for JSON-RPC transport only.
-- Secrets (API keys, bot tokens) should be stored as **environment variables** and referenced in `settings.json` via a secrets manager in production deployments.
-
----
-
-## Troubleshooting
-
-**`PermissionError` on macOS when taking screenshots or moving the mouse**  
-→ Grant Accessibility and Screen Recording permissions as described above.
-
-**`sounddevice` cannot open microphone on Linux**  
-→ Install PulseAudio or PipeWire dev headers: `sudo apt install portaudio19-dev`
-
-**Ollama returns connection refused**  
-→ Run `ollama serve` in a separate terminal and confirm it listens on port 11434.
-
-**Telegram bot not responding**  
-→ Check that `bot_token` is set and your Telegram user ID is in `whitelisted_user_ids`.
-
-**`faster-whisper` model download fails in offline mode**  
-→ Pre-download the model while online: `python -c "from faster_whisper import WhisperModel; WhisperModel('base.en')"`  
-   Models are cached in `~/.cache/huggingface/hub/`.
+Private project. All rights reserved.

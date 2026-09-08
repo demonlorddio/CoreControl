@@ -1,9 +1,16 @@
 """
-CoreControl — AI Desktop Assistant
-Main entry point: starts the Telegram gateway, audio recorder,
-PyQt6 overlay, and orchestrator together.
-"""
+CoreControl — Great Sage Desktop Companion
+Main entry point: starts the PyQt6 overlay, voice recorder, and orchestrator.
 
+Usage:
+    python main.py
+
+Controls:
+    Ctrl+Space  — activate voice capture (hold to record, release to transcribe)
+    Right-click — activate voice capture (alternative)
+    Drag        — reposition the companion
+    Close       — click the X or press Escape to quit
+"""
 from __future__ import annotations
 
 import asyncio
@@ -12,9 +19,10 @@ import logging
 import signal
 import sys
 import threading
+import time
 from pathlib import Path
 
-# ── Logging (stderr only) ─────────────────────────────────────────────────────
+# ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     stream=sys.stderr,
     level=logging.INFO,
@@ -37,135 +45,229 @@ def _load_settings() -> dict:
 
 _settings = _load_settings()
 
+# ── Hotkey listener (background thread) ──────────────────────────────────────
 
-# ── Qt overlay (optional — skipped if PyQt6 unavailable) ─────────────────────
+class HotkeyTrigger:
+    """
+    Listens for Ctrl+Space globally and emits a callback when triggered.
+    Uses pynput for cross-platform hotkey detection.
+    """
 
-def _start_overlay(orchestrator) -> None:
-    """Run the PyQt6 overlay in its own thread."""
+    def __init__(self, on_trigger: callable) -> None:
+        self._on_trigger = on_trigger
+        self._listener = None
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        """Start the hotkey listener in a background thread."""
+        try:
+            from pynput import keyboard
+        except ImportError:
+            logger.warning("pynput not installed — hotkey trigger disabled. Run: pip install pynput")
+            return
+
+        self._pressed = set()
+
+        def _on_press(key):
+            try:
+                self._pressed.add(key)
+            except TypeError:
+                pass
+            if self._is_triggered():
+                self._on_trigger()
+
+        def _on_release(key):
+            try:
+                self._pressed.discard(key)
+            except TypeError:
+                pass
+
+        self._listener = keyboard.Listener(
+            on_press=_on_press,
+            on_release=_on_release,
+        )
+        self._thread = threading.Thread(target=self._listener.start, daemon=True, name="hotkey")
+        self._thread.start()
+        logger.info("Hotkey listener started (Ctrl+Space)")
+
+    def stop(self) -> None:
+        if self._listener:
+            self._listener.stop()
+
+    def _is_triggered(self) -> bool:
+        """Check if Ctrl+Space is currently held."""
+        ctrl_down = any(
+            isinstance(k, keyboard.KeyCode) and k.vk == 17 or
+            isinstance(k, keyboard.Key) and k == keyboard.Key.ctrl_l
+            for k in self._pressed
+        )
+        space_down = any(
+            (isinstance(k, keyboard.KeyCode) and k.vk == 32) or
+            (isinstance(k, keyboard.Key) and k == keyboard.Key.space)
+            for k in self._pressed
+        )
+        return ctrl_down and space_down
+
+
+# ── Qt Overlay Thread ─────────────────────────────────────────────────────────
+
+def _run_overlay_thread(
+    orchestrator_future: asyncio.Future,
+    overlay_cfg: dict,
+) -> None:
+    """
+    Run the PyQt6 overlay in its own thread.
+    Manages the full application lifecycle.
+    """
     try:
         from PyQt6.QtWidgets import QApplication
-        from src.gui.overlay import create_app_and_overlay
+        from PyQt6.QtCore import QTimer
+        from src.gui.overlay import OverlayWidget, NPCState, HitlRequest
         from src.gui.audio_recorder import AudioRecorder
 
-        overlay_cfg = _settings.get("overlay", {})
         x = overlay_cfg.get("position", {}).get("x", 100)
         y = overlay_cfg.get("position", {}).get("y", 100)
 
-        qt_app, overlay = create_app_and_overlay(x=x, y=y)
-        overlay.show()
+        app, overlay = None, None
 
-        def on_transcription(text: str) -> None:
-            overlay.set_processing(True)
-            overlay.set_status("⚙ Processing…")
+        def _startup() -> None:
+            nonlocal app, overlay
+            app = QApplication.instance() or QApplication(sys.argv)
+            overlay = OverlayWidget(initial_x=x, initial_y=y)
+            overlay.show()
 
-            async def _dispatch():
-                response = await orchestrator.process_prompt(text)
-                logger.info("Voice response: %r", response[:120])
-                overlay.set_processing(False)
-                overlay.set_status("✅ Done", duration_ms=2000)
+        def _process_prompt(text: str) -> None:
+            """Handle voice transcription result."""
+            if not text or not text.strip():
+                return
+            overlay.set_state(NPCState.PROCESSING)
+            overlay.speak("Analysis in progress…", duration_ms=0)
 
-            asyncio.run_coroutine_threadsafe(_dispatch(), _main_loop)
+            async def _run():
+                orch = orchestrator_future.result()
+                result = await orch.process_prompt(text)
+                logger.info("Great Sage response: %s", result.text[:150])
+                overlay.set_state(NPCState.SPEAKING)
+                overlay.speak(result.text)
+                overlay.set_state(NPCState.IDLE)
 
-        recorder = AudioRecorder(on_transcription=on_transcription)
+            asyncio.run_coroutine_threadsafe(_run(), _main_loop)
 
-        def on_recording_state(active: bool) -> None:
-            recorder.is_recording = active
+        def _handle_hotkey() -> None:
+            """Triggered when Ctrl+Space is pressed."""
+            overlay.set_state(NPCState.LISTENING)
 
-        overlay.recording_state_changed.connect(on_recording_state)
+        # Start Qt app
+        _startup()
+
+        # Start audio recorder
+        recorder = AudioRecorder(on_transcription=_process_prompt)
         recorder.start()
 
-        qt_app.exec()
+        # Connect overlay signals
+        overlay.transcription_requested.connect(lambda: overlay.set_state(NPCState.LISTENING))
+
+        # Connect HITL signal
+        def _on_hitl_request(request: HitlRequest) -> None:
+            orch = orchestrator_future.result()
+            overlay.request_hitl(request, lambda result: orch.handle_hitl_response(
+                request.request_id, result.get("approved", False), result.get("args")
+            ))
+        overlay.hitl_requested.connect(_on_hitl_request)
+
+        # Hotkey trigger
+        hotkey = HotkeyTrigger(on_trigger=_handle_hotkey)
+        hotkey.start()
+
+        # Graceful shutdown on close
+        def _on_close() -> None:
+            logger.info("Shutting down…")
+            recorder.stop()
+            hotkey.stop()
+            if _main_loop and _main_loop.is_running():
+                _main_loop.call_soon_threadsafe(_main_loop.stop)
+
+        overlay.app_closing.connect(_on_close)
+
+        # Run Qt event loop
+        ret = app.exec()
+
+        # Cleanup
         recorder.stop()
+        hotkey.stop()
+        logger.info("Overlay thread exited with code %d", ret)
 
     except ImportError as exc:
-        logger.warning("PyQt6 overlay skipped: %s", exc)
+        logger.error("Qt import failed: %s", exc)
     except Exception as exc:
-        logger.error("Overlay error: %s", exc)
+        logger.error("Overlay thread error: %s", exc, exc_info=True)
 
 
-# ── Telegram gateway (optional) ───────────────────────────────────────────────
-
-async def _start_telegram(orchestrator) -> None:
-    tg_cfg = _settings.get("telegram", {})
-    token = tg_cfg.get("bot_token", "")
-
-    if not token or token == "YOUR_BOT_TOKEN_HERE":
-        logger.warning(
-            "Telegram bot token not configured — gateway disabled. "
-            "Set telegram.bot_token in config/settings.json."
-        )
-        return
-
-    try:
-        from src.bridge.telegram_bot import TelegramGateway
-
-        async def handle_prompt(prompt: str, user_id: int) -> str:
-            from src.orchestrator import ProcessResult
-            result = await orchestrator.process_prompt(prompt, user_id=user_id)
-            # Return just the text for the gateway to handle
-            return result.text if isinstance(result, ProcessResult) else result
-
-        gateway = TelegramGateway(on_prompt=handle_prompt)
-        # Attach gateway to orchestrator's HITL filter
-        orchestrator._hitl._gateway = gateway
-        await gateway.start()
-        logger.info("Telegram gateway active")
-        return gateway
-    except Exception as exc:
-        logger.error("Telegram gateway failed to start: %s", exc)
-        return None
-
-
-# ── Main async loop ───────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 _main_loop: asyncio.AbstractEventLoop | None = None
 
 
-async def _async_main() -> None:
-    global _main_loop
-    _main_loop = asyncio.get_running_loop()
-
-    from src.orchestrator import Orchestrator
-
-    orchestrator = Orchestrator()
-    await orchestrator.start()
-
-    gateway = await _start_telegram(orchestrator)
-
-    # Handle SIGINT / SIGTERM for clean shutdown
-    stop_event = asyncio.Event()
-
-    def _signal_handler(*_) -> None:
-        stop_event.set()
-
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            _main_loop.add_signal_handler(sig, _signal_handler)
-        except NotImplementedError:
-            # Windows does not support add_signal_handler for all signals
-            signal.signal(sig, _signal_handler)
-
-    logger.info("CoreControl ready. Press Ctrl+C to stop.")
-
-    try:
-        await stop_event.wait()
-    except (KeyboardInterrupt, SystemExit):
-        pass
-    finally:
-        logger.info("Shutting down…")
-        if gateway:
-            try:
-                await gateway.stop()
-            except Exception as exc:
-                logger.warning("Gateway shutdown error: %s", exc)
-        await orchestrator.stop()
-        logger.info("CoreControl stopped.")
-
-
 def main() -> None:
-    # Start PyQt6 overlay in a background thread (Qt must own its thread)
-    # We create the orchestrator inside the async loop, but we need the
-    # overlay thread to reference it — use a threading.Event as a handshake.
+    global _main_loop
+
+    overlay_cfg = _settings.get("overlay", {})
+
+    # Start Qt overlay thread FIRST (Qt must be in the main thread)
+    orchestrator_future: asyncio.Future = asyncio.get_event_loop().create_future()
+
+    overlay_thread = threading.Thread(
+        target=_run_overlay_thread,
+        args=(orchestrator_future, overlay_cfg),
+        daemon=True,
+        name="overlay",
+    )
+    overlay_thread.start()
+
+    # Give Qt a moment to initialise
+    time.sleep(0.5)
+
+    # Run the async orchestrator in the main thread
+    async def _async_main() -> None:
+        global _main_loop
+        _main_loop = asyncio.get_running_loop()
+
+        from src.orchestrator import Orchestrator
+
+        orch = Orchestrator()
+        orchestrator_future.set_result(orch)
+        await orch.start()
+
+        # Keep the event loop alive until the overlay thread signals shutdown
+        shutdown_event = asyncio.Event()
+
+        def _check_shutdown() -> None:
+            if not overlay_thread.is_alive():
+                shutdown_event.set()
+
+        # Handle signals for clean shutdown
+        def _signal_handler() -> None:
+            logger.info("Received shutdown signal")
+            shutdown_event.set()
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                _main_loop.add_signal_handler(sig, _signal_handler)
+            except NotImplementedError:
+                signal.signal(sig, lambda s, f: _signal_handler())
+
+        logger.info("CoreControl Great Sage ready. Press Ctrl+Space to activate voice.")
+        logger.info("Close the overlay window to exit.")
+
+        try:
+            await shutdown_event.wait()
+        except (KeyboardInterrupt, SystemExit):
+            pass
+        finally:
+            logger.info("Shutting down orchestrator…")
+            await orch.stop()
+            logger.info("CoreControl stopped.")
+
     try:
         asyncio.run(_async_main())
     except KeyboardInterrupt:
@@ -173,28 +275,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    # Also spin up the overlay if Qt is available — do it in a daemon thread
-    # so the process exits when the async loop finishes.
-    from src.orchestrator import Orchestrator
-
-    _orch_ref: list[Orchestrator] = []
-
-    original_async_main = _async_main
-
-    async def _patched_async_main() -> None:
-        from src.orchestrator import Orchestrator as _Orch
-        orch = _Orch()
-        _orch_ref.append(orch)
-        # Give overlay thread a moment to start
-        await asyncio.sleep(0.2)
-        await original_async_main()
-
-    overlay_thread = threading.Thread(
-        target=lambda: _start_overlay(_orch_ref[0]) if _orch_ref else None,
-        daemon=True,
-        name="overlay",
-    )
-    # Start overlay thread after a short delay so the orchestrator is ready
-    threading.Timer(1.0, lambda: overlay_thread.start()).start()
-
     main()

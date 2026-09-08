@@ -3,10 +3,8 @@ Voice Activity Detection and audio recording module for CoreControl.
 Listens to microphone input, detects speech via energy-based VAD,
 transcribes with faster-whisper, and routes text to the orchestrator.
 """
-
 from __future__ import annotations
 
-import io
 import json
 import logging
 import queue
@@ -165,7 +163,7 @@ class AudioRecorder:
             else:
                 if in_speech:
                     silence_count += 1
-                    speech_frames.append(block)  # include trailing silence
+                    speech_frames.append(block)
                     if silence_count >= SILENCE_BLOCKS:
                         logger.debug("Speech ended (%d blocks)", len(speech_frames))
                         audio = np.concatenate(speech_frames)
@@ -191,7 +189,6 @@ class AudioRecorder:
             if self._model is None:
                 return
 
-            # faster-whisper expects float32 PCM in [-1, 1]
             audio_float = audio.astype(np.float32)
 
             segments, info = self._model.transcribe(

@@ -1,10 +1,4 @@
 {
-  "telegram": {
-    "bot_token": "8938893546:AAEMFoG3ky-CNu7uQ53gJwjQgw6i1aos630",
-    "whitelisted_user_ids": [7363883298],
-    "enable_hitl": true,
-    "hitl_timeout_seconds": 300
-  },
   "failsafe": {
     "enable_pyautogui_failsafe": true,
     "failsafe_corner": "top-left"
@@ -58,8 +52,6 @@
   "overlay": {
     "opacity": 0.8,
     "always_on_top": true,
-    "width": 200,
-    "height": 100,
     "position": {
       "x": 100,
       "y": 100
