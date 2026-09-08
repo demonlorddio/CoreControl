@@ -224,12 +224,28 @@ class FishAudioTTS:
             return self._fallback_generate_audio(text, cache_file)
 
     def _fallback_generate_audio(self, text: str, cache_file: Path) -> Optional[bytes]:
-        """Fallback TTS using local pyttsx3 engine.
+        """Fallback TTS using edge-tts (Japanese) or pyttsx3 (English).
 
-        NOTE: pyttsx3 generates WAV but saves with whatever extension given.
-        Save as .wav — pygame-ce handles WAV natively; saving as .mp3 causes
-        "Out of memory" because codec mismatch (WAV bytes with .mp3 extension).
+        edge-tts provides high-quality neural Japanese voices (free, no API key).
+        pyttsx3 handles English as a local fallback.
         """
+        import asyncio
+
+        def _is_japanese(text: str) -> bool:
+            """Check if text contains Japanese characters."""
+            for ch in text:
+                cp = ord(ch)
+                if (0x3040 <= cp <= 0x30FF) or (0xFF00 <= cp <= 0xFF9F):
+                    return True
+            return False
+
+        if _is_japanese(text):
+            return self._fallback_generate_edge_tts(text, cache_file)
+        else:
+            return self._fallback_generate_pyttsx3(text, cache_file)
+
+    def _fallback_generate_pyttsx3(self, text: str, cache_file: Path) -> Optional[bytes]:
+        """Fallback TTS for English using local pyttsx3 engine."""
         try:
             import pyttsx3
             temp_path = str(self._cache_dir / f"_pyttsx_{hash(text) & 0xFFFFFFFF:08x}.wav")
@@ -250,6 +266,10 @@ class FishAudioTTS:
 
             if os.path.exists(temp_path):
                 audio_data = Path(temp_path).read_bytes()
+                if len(audio_data) < 1000:
+                    logger.warning("pyttsx3 generated suspiciously small file (%d bytes)", len(audio_data))
+                    os.unlink(temp_path)
+                    return None
                 cache_file.write_bytes(audio_data)
                 logger.info("Fallback pyttsx3 generated %d bytes for: %s", len(audio_data), text[:30])
                 return audio_data
@@ -257,6 +277,37 @@ class FishAudioTTS:
 
         except Exception as e:
             logger.error("pyttsx3 fallback failed: %s", e)
+            return None
+
+    def _fallback_generate_edge_tts(self, text: str, cache_file: Path) -> Optional[bytes]:
+        """Fallback TTS for Japanese using edge-tts (free, neural voices)."""
+        try:
+            import edge_tts
+
+            temp_path = str(self._cache_dir / f"_edge_{hash(text) & 0xFFFFFFFF:08x}.mp3")
+
+            # Use KeitaNeural (male) for Great Sage persona
+            voice = "ja-JP-KeitaNeural"
+
+            comm = edge_tts.Communicate(text, voice)
+            asyncio.run(comm.save(temp_path))
+
+            if os.path.exists(temp_path):
+                audio_data = Path(temp_path).read_bytes()
+                if len(audio_data) < 500:
+                    logger.warning("edge-tts generated suspiciously small file (%d bytes)", len(audio_data))
+                    os.unlink(temp_path)
+                    return None
+                cache_file.write_bytes(audio_data)
+                logger.info("Fallback edge-tts generated %d bytes for: %s", len(audio_data), text[:30])
+                return audio_data
+            return None
+
+        except ImportError:
+            logger.error("edge-tts not installed — cannot generate Japanese TTS")
+            return None
+        except Exception as e:
+            logger.error("edge-tts fallback failed: %s", e)
             return None
 
     def stop(self) -> None:
