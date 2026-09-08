@@ -57,6 +57,7 @@ class HotkeyTrigger:
         self._on_trigger = on_trigger
         self._listener = None
         self._thread: threading.Thread | None = None
+        self._keyboard = None
 
     def start(self) -> None:
         """Start the hotkey listener in a background thread."""
@@ -66,6 +67,7 @@ class HotkeyTrigger:
             logger.warning("pynput not installed — hotkey trigger disabled. Run: pip install pynput")
             return
 
+        self._keyboard = keyboard
         self._pressed = set()
 
         def _on_press(key):
@@ -97,13 +99,13 @@ class HotkeyTrigger:
     def _is_triggered(self) -> bool:
         """Check if Ctrl+Space is currently held."""
         ctrl_down = any(
-            isinstance(k, keyboard.KeyCode) and k.vk == 17 or
-            isinstance(k, keyboard.Key) and k == keyboard.Key.ctrl_l
+            isinstance(k, self._keyboard.KeyCode) and k.vk == 17 or
+            isinstance(k, self._keyboard.Key) and k == self._keyboard.Key.ctrl_l
             for k in self._pressed
         )
         space_down = any(
-            (isinstance(k, keyboard.KeyCode) and k.vk == 32) or
-            (isinstance(k, keyboard.Key) and k == keyboard.Key.space)
+            (isinstance(k, self._keyboard.KeyCode) and k.vk == 32) or
+            (isinstance(k, self._keyboard.Key) and k == self._keyboard.Key.space)
             for k in self._pressed
         )
         return ctrl_down and space_down
@@ -155,7 +157,15 @@ def _run_overlay_thread(
             overlay.speak("Analysis in progress…", duration_ms=0)
 
             coro = orch.process_prompt(text)
-            asyncio.run_coroutine_threadsafe(coro, _main_loop)
+            future = asyncio.run_coroutine_threadsafe(coro, _main_loop)
+            def _on_result(_fut):
+                try:
+                    result = _fut.result()
+                    logger.info("Orchestrator result text (first 80 chars): %r", result.text[:80])
+                    overlay.response_received.emit(result.text)
+                except Exception as exc:
+                    logger.error("Voice result callback error: %s", exc, exc_info=True)
+            future.add_done_callback(_on_result)
 
         def _handle_hotkey() -> None:
             """Triggered when Ctrl+Space is pressed."""
@@ -170,6 +180,29 @@ def _run_overlay_thread(
 
         # Connect overlay signals
         overlay.transcription_requested.connect(lambda: overlay.set_state(NPCState.LISTENING))
+        def _on_prompt(text: str) -> None:
+            if not text or not text.strip():
+                return
+            orch = orch_handle[0]
+            if orch is None:
+                logger.warning("Orchestrator not ready, dropping prompt")
+                return
+            overlay.set_state(NPCState.PROCESSING)
+            overlay.speak("Analysis in progress…", duration_ms=0)
+
+            coro = orch.process_prompt(text)
+            future = asyncio.run_coroutine_threadsafe(coro, _main_loop)
+            def _on_result(_fut):
+                try:
+                    result = _fut.result()
+                    logger.info("Text prompt result (first 80 chars): %r", result.text[:80])
+                    overlay.response_received.emit(result.text)
+                except Exception as exc:
+                    logger.error("Text prompt result callback error: %s", exc, exc_info=True)
+            future.add_done_callback(_on_result)
+
+        overlay.prompt_submitted.connect(_on_prompt)
+        overlay.response_received.connect(overlay.speak)
 
         # Connect HITL signal
         def _on_hitl_request(request: HitlRequest) -> None:

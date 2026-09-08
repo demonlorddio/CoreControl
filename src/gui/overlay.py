@@ -22,6 +22,7 @@ import math
 import sys
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from enum import Enum
 from typing import Any, Callable, Optional
 
@@ -36,11 +37,13 @@ from PyQt6.QtGui import (
     QColor,
     QFont,
     QFontMetrics,
+    QMovie,
     QMouseEvent,
     QPainter,
     QPaintEvent,
     QPen,
     QPolygon,
+    QPixmap,
 )
 from PyQt6.QtWidgets import (
     QApplication,
@@ -51,6 +54,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QVBoxLayout,
+    QMenu,
     QWidget,
 )
 
@@ -79,9 +83,11 @@ class HitlRequest:
 
 class GreatSageAvatar(QWidget):
     """
-    Animated Great Sage companion rendered entirely with QPainter.
-    Features: floating robe, glowing core, state-dependent eyes, particle aura.
+    Animated Great Sage companion with GIF avatar and
+    state-dependent glow effects layered on top.
     """
+
+    _IMG_PATH = Path(__file__).resolve().parent.parent.parent / "great-sage-transparent-clean.gif"
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -89,20 +95,33 @@ class GreatSageAvatar(QWidget):
 
         self._state = NPCState.IDLE
         self._bounce_offset: float = 0.0
-        self._blink_timer: int = 0
         self._is_blinking: bool = False
-        self._core_hue: float = 200.0  # cycles through blue→cyan→gold
-        self._particle_phase: float = 0.0
+        self._core_hue: float = 200.0
         self._processing_spin: float = 0.0
+
+        # Load animated GIF
+        self._movie: Optional[QMovie] = None
+        self._current_frame: QPixmap = QPixmap()
+        gif_path = str(self._IMG_PATH)
+        self._movie = QMovie(gif_path)
+        if self._movie and self._movie.isValid():
+            self._movie.setCacheMode(QMovie.CacheMode.CacheAll)
+            self._movie.frameChanged.connect(self._on_frame_changed)
+            self._movie.start()
+            first_frame = self._movie.currentPixmap()
+            if not first_frame.isNull():
+                self._current_frame = first_frame.scaled(
+                    76, 86,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+        else:
+            logger.warning("Could not load GIF at %s — falling back to blank avatar", gif_path)
 
         # Animation timers
         self._bounce_timer = QTimer(self)
         self._bounce_timer.timeout.connect(self._tick_bounce)
         self._bounce_timer.start(50)
-
-        self._blink_timer_ctrl = QTimer(self)
-        self._blink_timer_ctrl.timeout.connect(self._schedule_blink)
-        self._blink_timer_ctrl.start(4000)
 
         self._processing_timer = QTimer(self)
         self._processing_timer.timeout.connect(self._tick_processing)
@@ -123,7 +142,7 @@ class GreatSageAvatar(QWidget):
 
     def _schedule_blink(self) -> None:
         if self._state == NPCState.PROCESSING:
-            return  # no blink while processing
+            return
         self._is_blinking = True
         self.update()
         QTimer.singleShot(120, self._end_blink)
@@ -154,13 +173,31 @@ class GreatSageAvatar(QWidget):
             self._core_hue = 200.0
         self.update()
 
+    def _on_frame_changed(self) -> None:
+        """Update the current frame from the GIF animation."""
+        pixmap = self._movie.currentPixmap() if self._movie else QPixmap()
+        if not pixmap.isNull():
+            self._current_frame = pixmap.scaled(
+                76, 86,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        self.update()
+
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         cx, cy = 40, 45 + self._bounce_offset
         st = self._state
 
-        # ── Aura / glow ──────────────────────────────────────────────────
+        # ── Image ────────────────────────────────────────────────────────
+        if not self._current_frame.isNull():
+            img_rect = self._current_frame.rect()
+            draw_x = int(cx - img_rect.width() / 2)
+            draw_y = int(cy - img_rect.height() / 2)
+            p.drawPixmap(draw_x, draw_y, self._current_frame)
+
+        # ── Aura / glow (always drawn on top) ────────────────────────────
         if st == NPCState.LISTENING:
             pulse = 0.3 + 0.15 * math.sin(self._processing_spin * 3)
             glow = QColor(80, 160, 255)
@@ -177,117 +214,14 @@ class GreatSageAvatar(QWidget):
             glow = QColor(60, 140, 200)
             glow.setAlphaF(0.2)
 
-        glowPainter = QPainter(self)
-        glowPainter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        glowPainter.setBrush(glow)
-        glowPainter.setPen(Qt.PenStyle.NoPen)
-        glowPainter.drawEllipse(int(cx - 30), int(cy - 30), 60, 60)
-        glowPainter.end()
-
-        # ── Floating robe / body ─────────────────────────────────────────
-        robe_color = QColor(25, 45, 80)
-        robe_light = QColor(40, 70, 120)
-        p.setPen(QPen(QColor(60, 100, 160), 1.5))
-
-        # Main body (teardrop/robe shape)
-        body_top = cy - 22
-        body_bot = cy + 28
-        p.setBrush(robe_color)
-        p.drawEllipse(int(cx - 18), int(body_top), 36, 30)
-        # Robe bottom (wider)
-        p.setBrush(robe_light)
-        p.drawEllipse(int(cx - 22), int(body_top + 18), 44, 22)
-
-        # Robe fold lines
-        p.setPen(QPen(QColor(50, 90, 140), 1))
-        p.drawLine(cx - 8, body_top + 8, cx - 10, body_bot - 2)
-        p.drawLine(cx + 8, body_top + 8, cx + 10, body_bot - 2)
-
-        # ── Eyes ─────────────────────────────────────────────────────────
-        eye_y = cy - 10
-        eye_spacing = 9
-        pupil_color = QColor(200, 230, 255)
-
-        if st == NPCState.PROCESSING:
-            # Wide, focused eyes
-            for ex in (cx - eye_spacing, cx + eye_spacing):
-                p.setBrush(pupil_color)
-                p.setPen(Qt.PenStyle.NoPen)
-                p.drawEllipse(int(ex - 4), int(eye_y - 4), 8, 8)
-                p.setBrush(QColor(10, 20, 40))
-                p.drawEllipse(int(ex - 2), int(eye_y - 2), 4, 4)
-        elif st == NPCState.LISTENING:
-            # Half-closed, calm
-            for ex in (cx - eye_spacing, cx + eye_spacing):
-                p.setBrush(pupil_color)
-                p.setPen(Qt.PenStyle.NoPen)
-                p.drawEllipse(int(ex - 3), int(eye_y - 1), 6, 4)
-                p.setBrush(QColor(10, 20, 40))
-                p.drawEllipse(int(ex - 1), int(eye_y), 3, 2)
-        elif st == NPCState.SPEAKING:
-            # Open, expressive
-            for ex in (cx - eye_spacing, cx + eye_spacing):
-                p.setBrush(pupil_color)
-                p.setPen(Qt.PenStyle.NoPen)
-                p.drawEllipse(int(ex - 4), int(eye_y - 4), 8, 8)
-                p.setBrush(QColor(10, 20, 40))
-                p.drawEllipse(int(ex - 2), int(eye_y - 2), 4, 5)
-        else:  # IDLE
-            if self._is_blinking:
-                p.setPen(QPen(QColor(180, 210, 240), 2, Qt.PenStyle.SolidLine))
-                p.drawLine(cx - eye_spacing - 3, eye_y, cx - eye_spacing + 3, eye_y)
-                p.drawLine(cx + eye_spacing - 3, eye_y, cx + eye_spacing + 3, eye_y)
-            else:
-                for ex in (cx - eye_spacing, cx + eye_spacing):
-                    p.setBrush(pupil_color)
-                    p.setPen(Qt.PenStyle.NoPen)
-                    p.drawEllipse(int(ex - 3), int(eye_y - 3), 6, 6)
-                    p.setBrush(QColor(10, 20, 40))
-                    p.drawEllipse(int(ex - 1), int(eye_y - 1), 3, 3)
-
-        # ── Mouth ────────────────────────────────────────────────────────
-        mouth_y = cy + 4
-        if st == NPCState.SPEAKING:
-            p.setBrush(QColor(40, 80, 120))
-            p.setPen(Qt.PenStyle.NoPen)
-            p.drawEllipse(int(cx - 4), int(mouth_y), 8, 5)
-        elif st == NPCState.PROCESSING:
-            p.setPen(QPen(QColor(180, 210, 240), 2, Qt.PenStyle.SolidLine))
-            p.drawLine(cx - 4, mouth_y, cx + 4, mouth_y)
-        else:
-            p.setPen(QPen(QColor(180, 210, 240), 2, Qt.PenStyle.SolidLine))
-            p.drawArc(cx - 5, mouth_y - 1, 10, 7, 160, 160)
-
-        # ── Magical core (chest gem) ─────────────────────────────────────
-        core_y = cy + 2
-        core_color = QColor.fromHsl(int(self._core_hue), 80, 65)
-        core_alpha = 180 if st in (NPCState.LISTENING, NPCState.PROCESSING) else 100
-        core_color.setAlpha(core_alpha)
-        p.setBrush(core_color)
-        p.setPen(QPen(QColor(200, 230, 255), 1))
-        p.drawEllipse(int(cx - 5), int(core_y - 5), 10, 10)
-
-        # Core glow ring
-        ring_color = QColor.fromHsl(int(self._core_hue), 90, 70)
-        ring_color.setAlphaF(0.3 + 0.2 * math.sin(self._processing_spin))
-        p.setPen(QPen(ring_color, 1.5))
-        ring_r = 8 + 2 * math.sin(self._processing_spin * 2)
-        p.drawEllipse(int(cx - ring_r), int(core_y - ring_r), int(ring_r * 2), int(ring_r * 2))
-
-        # ── Processing particles ─────────────────────────────────────────
-        if st in (NPCState.PROCESSING, NPCState.LISTENING):
-            particle_color = QColor.fromHsl(int(self._core_hue), 70, 75)
-            particle_color.setAlphaF(0.6)
-            for i in range(6):
-                angle = self._processing_spin + i * (math.pi / 3)
-                dist = 22 + 4 * math.sin(self._processing_spin * 3 + i)
-                px = cx + math.cos(angle) * dist
-                py = core_y + math.sin(angle) * dist * 0.6
-                p.setBrush(particle_color)
-                p.setPen(Qt.PenStyle.NoPen)
-                p.drawEllipse(int(px) - 1, int(py) - 1, 3, 3)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+        p.setBrush(glow)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(int(cx - 30), int(cy - 30), 60, 60)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
 
         # ── State indicator dot ──────────────────────────────────────────
+        body_bot = cy + 28
         indicator_y = body_bot + 6
         if st == NPCState.LISTENING:
             dot_color = QColor(80, 180, 255)
@@ -301,6 +235,13 @@ class GreatSageAvatar(QWidget):
         p.setBrush(dot_color)
         p.setPen(Qt.PenStyle.NoPen)
         p.drawEllipse(int(cx - 3), int(indicator_y), 6, 6)
+
+        # ── Blink overlay (IDLE only) ────────────────────────────────────
+        if st == NPCState.IDLE and self._is_blinking:
+            eye_y = int(cy - 10)
+            p.setPen(QPen(QColor(180, 210, 240, 200), 2, Qt.PenStyle.SolidLine))
+            p.drawLine(int(cx - 12), eye_y, int(cx - 6), eye_y)
+            p.drawLine(int(cx + 6), eye_y, int(cx + 12), eye_y)
 
         p.end()
 
@@ -642,8 +583,10 @@ class OverlayWidget(QWidget):
 
     # Signals
     transcription_requested = pyqtSignal()  # Emitted when user clicks avatar
+    prompt_submitted = pyqtSignal(str)  # Emitted when user submits text prompt
     hitl_requested = pyqtSignal(object)  # Emitted with HitlRequest
     hitl_response_received = pyqtSignal(str, object)  # (request_id, result_dict)
+    response_received = pyqtSignal(str)  # Emitted when orchestrator returns a response
     app_closing = pyqtSignal()  # Emitted on close
 
     def __init__(
@@ -668,18 +611,71 @@ class OverlayWidget(QWidget):
         self._drag_start: Optional[QPoint] = None
         self._hitl_modal: Optional[HITLModal] = None
         self._hitl_waiting: dict[str, tuple[HITLRequest, Callable]] = {}
+        self._show_on_top = True
 
         # ── Avatar ──────────────────────────────────────────────────────
         self._avatar = GreatSageAvatar(self)
         self._avatar.setGeometry(10, 10, 80, 90)
+
+        # ── Control button (top-right, "^") ─────────────────────────────
+        self._ctrl_btn = QPushButton("^", self)
+        self._ctrl_btn.setFixedSize(22, 22)
+        self._ctrl_btn.move(self.width() - 28, 6)
+        self._ctrl_btn.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        self._ctrl_btn.setStyleSheet(
+            "QPushButton { "
+            "    background: qradialgradient(cx:0.5, cy:0.5, radius:0.8, "
+            "                                  fx:0.3, fy:0.3, "
+            "                                  stop:0 rgba(80, 130, 220, 255), "
+            "                                  stop:1 rgba(30, 60, 130, 255)); "
+            "    color: rgba(255, 255, 255, 255); "
+            "    border: 2px solid rgba(140, 190, 255, 255); "
+            "    border-radius: 11px; "
+            "    font-size: 14px; "
+            "    font-weight: bold; "
+            "} "
+            "QPushButton:hover { "
+            "    background: qradialgradient(cx:0.5, cy:0.5, radius:0.8, "
+            "                                  fx:0.3, fy:0.3, "
+            "                                  stop:0 rgba(110, 160, 255, 255), "
+            "                                  stop:1 rgba(50, 90, 180, 255)); "
+            "    border-color: rgba(180, 220, 255, 255); "
+            "} "
+            "QPushButton:pressed { "
+            "    background: rgba(20, 50, 120, 255); "
+            "}"
+        )
+        self._ctrl_btn.clicked.connect(self._show_ctrl_menu)
 
         # ── Speech bubble ───────────────────────────────────────────────
         self._bubble = SpeechBubble(self)
         self._bubble.set_font(QFont("Consolas", 10))
         self._bubble.hide()
 
+        # ── Text prompt input ──────────────────────────────────────────
+        self._prompt_input = QLineEdit(self)
+        self._prompt_input.setPlaceholderText("Type a prompt…")
+        self._prompt_input.setFixedSize(180, 26)
+        self._prompt_input.move(10, 106)
+        self._prompt_input.returnPressed.connect(self._submit_prompt)
+        self._prompt_input.setStyleSheet(
+            "QLineEdit { "
+            "    background: rgba(20, 30, 50, 200); "
+            "    color: rgba(200, 230, 255, 255); "
+            "    border: 1px solid rgba(100, 150, 255, 150); "
+            "    border-radius: 4px; "
+            "    padding: 2px 8px; "
+            "    font-size: 11px; "
+            "    font-family: Consolas; "
+            "} "
+            "QLineEdit:focus { "
+            "    border-color: rgba(140, 190, 255, 255); "
+            "    background: rgba(25, 40, 70, 220); "
+            "}"
+        )
+
         # ── Size ────────────────────────────────────────────────────────
-        self.setFixedSize(100, 100)
+        self.setFixedSize(200, 140)
         self.move(initial_x, initial_y)
 
         # ── Auto-hide speech timer ──────────────────────────────────────
@@ -700,9 +696,11 @@ class OverlayWidget(QWidget):
 
     def speak(self, text: str, duration_ms: int = 8000) -> None:
         """Display text in the speech bubble."""
+        import logging
+        logger = logging.getLogger("corecontrol.overlay")
+        logger.info("speak() called with: %r", text[:80])
         self._speech_text = text
         self._bubble.speak(text)
-        self._bubble.setGeometry(95, 10, 0, 0)  # size updated internally
         self._reposition_bubble()
         self._speech_timer.stop()
         if duration_ms > 0:
@@ -749,6 +747,19 @@ class OverlayWidget(QWidget):
         new_h = max(self.height(), 100 + bubble_h + 10)
         if new_w != self.width() or new_h != self.height():
             self.setFixedSize(new_w, new_h)
+            self._reposition_ctrl_btn()
+
+    def _reposition_ctrl_btn(self) -> None:
+        """Keep the control button pinned to the top-right corner."""
+        self._ctrl_btn.move(self.width() - 28, 6)
+
+    def _submit_prompt(self) -> None:
+        """Submit text from the input field."""
+        text = self._prompt_input.text().strip()
+        if not text:
+            return
+        self._prompt_input.clear()
+        self.prompt_submitted.emit(text)
 
     def _clear_speech(self) -> None:
         self._bubble.clear()
@@ -768,6 +779,46 @@ class OverlayWidget(QWidget):
             self.hitl_response_received.emit(request_id, {"approved": False, "args": args})
         self._hitl_modal = None
         self._hitl_waiting.pop(request_id, None)
+
+    def _show_ctrl_menu(self) -> None:
+        """Show the popup menu for the control button."""
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            "QMenu { background: rgba(20, 30, 50, 230); color: rgba(200, 230, 255, 220); "
+            "border: 1px solid rgba(100, 150, 255, 180); border-radius: 6px; padding: 4px; }"
+            "QMenu::item { padding: 6px 20px; font-family: Consolas; font-size: 11px; }"
+            "QMenu::item:selected { background: rgba(60, 100, 180, 160); border-radius: 4px; }"
+        )
+
+        act_hide = menu.addAction("Hide")
+        act_hide.setShortcut("H")
+        act_hide.triggered.connect(self._do_hide)
+
+        act_top = menu.addAction("Show on Top" if self._show_on_top else "Always on Top")
+        act_top.triggered.connect(self._toggle_show_on_top)
+
+        act_quit = menu.addAction("Quit")
+        act_quit.setShortcut("Q")
+        act_quit.triggered.connect(self._do_quit)
+
+        menu.exec(self._ctrl_btn.mapToGlobal(self._ctrl_btn.rect().bottomLeft()))
+
+    def _do_hide(self) -> None:
+        self.hide()
+
+    def _toggle_show_on_top(self) -> None:
+        self._show_on_top = not self._show_on_top
+        flags = self.windowFlags()
+        if self._show_on_top:
+            flags |= Qt.WindowType.WindowStaysOnTopHint
+        else:
+            flags &= ~Qt.WindowType.WindowStaysOnTopHint
+        self.setWindowFlags(flags)
+        self.show()
+
+    def _do_quit(self) -> None:
+        self.app_closing.emit()
+        QApplication.instance().quit()
 
     # ── Paint ─────────────────────────────────────────────────────────────────
 
