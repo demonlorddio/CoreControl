@@ -133,10 +133,13 @@ class AudioPlayer:
         if not audio_data:
             return False
 
-        # Write to temp file
-        # Use .wav extension — pyttsx3 generates WAV bytes; .mp3 extension
-        # causes pygame to throw "Out of memory" due to codec mismatch.
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        # Determine format from magic bytes so pygame uses the right decoder
+        if audio_data[:4] == b"ID3" or audio_data[:2] == b"\xff\xfb":
+            ext = ".mp3"
+        else:
+            ext = ".wav"
+
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as f:
             f.write(audio_data)
             temp_path = f.name
 
