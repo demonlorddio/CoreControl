@@ -36,7 +36,7 @@ def _try_qt() -> bool:
         test_player.setAudioOutput(test_output)
         with _tf.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             test_path = f.name
-        player.setSource(QUrl.fromLocalFile(test_path))
+        test_player.setSource(QUrl.fromLocalFile(test_path))
         test_player.play()
         test_player.stop()
         import os
@@ -85,6 +85,21 @@ def _init_pygame() -> None:
             pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
     except Exception:
         pass
+
+
+def _switch_to_pygame() -> None:
+    """Permanently switch from QtMultimedia to pygame-ce."""
+    global _use_pygame, _player, _output
+    if _player:
+        try:
+            _player.stop()
+        except Exception:
+            pass
+        _player.deleteLater()
+    _player = None
+    _output = None
+    _use_pygame = True
+    _init_pygame()
 
 
 class AudioPlayer:
@@ -151,11 +166,7 @@ class AudioPlayer:
             # First MP3 failure → permanently switch to pygame
             if not _use_pygame:
                 logger.warning("QtMultimedia can't play MP3 (%s) — switching to pygame", e)
-                global _use_pygame
-                _use_pygame = True
-                _init_pygame()
-                self._player = None
-                self._output = None
+                _switch_to_pygame()
                 return self.play_audio(audio_data)  # Retry with pygame
             logger.error("Failed to play audio: %s", e)
             self._is_playing = False
