@@ -133,11 +133,13 @@ class AudioPlayer:
         if not audio_data:
             return False
 
-        # Determine format from magic bytes so pygame uses the right decoder
-        if audio_data[:4] == b"ID3" or audio_data[:2] == b"\xff\xfb":
-            ext = ".mp3"
-        else:
-            ext = ".wav"
+        # Determine format from magic bytes
+        # MP3 sync frame: 0xFF + (0xE0 & byte2) == 0xE0  (e.g., 0xFF 0xF3)
+        is_mp3 = (
+            audio_data[:4] == b"ID3"
+            or (len(audio_data) > 1 and audio_data[0] == 0xFF and (audio_data[1] & 0xE0) == 0xE0)
+        )
+        ext = ".mp3" if is_mp3 else ".wav"
 
         with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as f:
             f.write(audio_data)
@@ -153,16 +155,19 @@ class AudioPlayer:
             if _use_pygame:
                 import pygame
                 _init_pygame()
-                pygame.mixer.music.load(temp_path)
-                pygame.mixer.music.set_volume(0.8)
-                pygame.mixer.music.play()
-                self._is_playing = True
-                logger.debug("Playing audio via pygame: %d bytes", len(audio_data))
-                # Estimate duration (~4KB/s for speech MP3, min 2s)
-                duration_sec = max(len(audio_data) / 4096, 2.0)
-                threading.Timer(duration_sec + 0.5, cleanup).start()
-                return True
+                try:
+                    pygame.mixer.music.load(temp_path)
+                    pygame.mixer.music.set_volume(0.8)
+                    pygame.mixer.music.play()
+                    self._is_playing = True
+                    logger.debug("Playing audio via pygame: %d bytes", len(audio_data))
+                    duration_sec = max(len(audio_data) / 4096, 2.0)
+                    threading.Timer(duration_sec + 0.5, cleanup).start()
+                    return True
+                except Exception as pygame_err:
+                    logger.warning("pygame can't play this format (%s), using system player", pygame_err)
             else:
+                # QtMultimedia path
                 self._player.setSource(QUrl.fromLocalFile(temp_path))
                 self._output.setVolume(0.8)
                 self._player.play()
@@ -173,27 +178,20 @@ class AudioPlayer:
                 logger.debug("Playing audio via QtMultimedia: %d bytes", len(audio_data))
                 return True
 
+            # System player fallback (MP3/any format on Windows)
+            import subprocess
+            import os as _os
+            if _os.name == "nt":
+                _os.startfile(temp_path)
+            else:
+                subprocess.run(["open", temp_path], check=False)
+            self._is_playing = True
+            logger.debug("Playing audio via system player: %d bytes", len(audio_data))
+            duration_sec = max(len(audio_data) / 4096, 2.0)
+            threading.Timer(duration_sec + 0.5, cleanup).start()
+            return True
+
         except Exception as e:
-            # Qt failure → switch to pygame and retry once (no recursion).
-            if not _use_pygame:
-                logger.warning("QtMultimedia failed (%s) — switching to pygame", e)
-                _switch_to_pygame()
-                # Direct pygame play without re-entering this method
-                try:
-                    import pygame
-                    _init_pygame()
-                    pygame.mixer.music.load(temp_path)
-                    pygame.mixer.music.set_volume(0.8)
-                    pygame.mixer.music.play()
-                    self._is_playing = True
-                    duration_sec = max(len(audio_data) / 44100 * 4, 2.0)
-                    threading.Timer(duration_sec + 0.5, cleanup).start()
-                    return True
-                except Exception as e2:
-                    logger.error("pygame also failed: %s", e2)
-                    cleanup()
-                    self._is_playing = False
-                    return False
             logger.error("Failed to play audio: %s", e)
             self._is_playing = False
             cleanup()

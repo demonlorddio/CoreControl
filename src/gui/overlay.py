@@ -801,12 +801,17 @@ class OverlayWidget(QWidget):
         return duration_ms
 
     def _play_audio_with_fallback(self, audio_data: bytes) -> bool:
-        """Play audio with automatic fallback from QtMultimedia to pygame."""
+        """Play audio with automatic fallback from QtMultimedia to pygame to system player."""
+        import os
         import tempfile
         try:
-            # Use .wav extension — pyttsx3 generates WAV bytes; .mp3 extension
-            # causes pygame to throw "Out of memory" due to codec mismatch.
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            # Detect format from magic bytes so the temp file gets the right extension
+            is_mp3 = (
+                audio_data[:4] == b"ID3"
+                or (len(audio_data) > 1 and audio_data[0] == 0xFF and (audio_data[1] & 0xE0) == 0xE0)
+            )
+            ext = ".mp3" if is_mp3 else ".wav"
+            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as f:
                 f.write(audio_data)
                 temp_path = f.name
 
@@ -816,9 +821,20 @@ class OverlayWidget(QWidget):
                 except Exception:
                     pass
 
-            # Iterative fallback: try Qt first if enabled, then pygame.
-            # Max 2 attempts — prevents infinite recursion if both fail.
-            for attempt in (["qt", "pygame"] if self._use_audio_player else ["pygame"]):
+            def _system_play():
+                """Fall back to OS default player for formats pygame can't handle."""
+                import subprocess
+                if os.name == "nt":
+                    os.startfile(temp_path)
+                else:
+                    subprocess.run(["open", temp_path], check=False)
+                duration_sec = max(len(audio_data) / 4096, 2.0)
+                threading.Timer(duration_sec + 0.5, cleanup).start()
+
+            # Iterative fallback: try Qt first if enabled, then pygame, then system player.
+            # Max 3 attempts — prevents infinite recursion if all fail.
+            attempts = (["qt", "pygame", "system"] if self._use_audio_player else ["pygame", "system"])
+            for attempt in attempts:
                 try:
                     if attempt == "qt":
                         # QtMultimedia path
@@ -835,7 +851,7 @@ class OverlayWidget(QWidget):
                             else None
                         )
                         return True
-                    else:
+                    elif attempt == "pygame":
                         # pygame-ce fallback
                         import pygame
                         if not pygame.mixer.get_init():
@@ -847,6 +863,10 @@ class OverlayWidget(QWidget):
                         duration_sec = max(len(audio_data) / 44100 * 4, 2.0)
                         threading.Timer(duration_sec + 0.5, cleanup).start()
                         return True
+                    else:
+                        # System player — handles MP3 and any format the OS supports
+                        _system_play()
+                        return True
                 except Exception as e:
                     logger.warning("Audio playback failed via %s (%s)", attempt, e)
                     if self._audio_player:
@@ -857,7 +877,7 @@ class OverlayWidget(QWidget):
                             pass
                         self._audio_player = None
                         self._audio_output = None
-            # Both attempts failed
+            # All attempts failed
             cleanup()
             return False
 
