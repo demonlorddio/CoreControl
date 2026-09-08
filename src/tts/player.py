@@ -22,15 +22,25 @@ _use_pygame = False
 
 
 def _try_qt() -> bool:
-    """Check if QtMultimedia can actually create a playable player."""
+    """Check if QtMultimedia can actually play audio."""
     if not _QT_AVAILABLE:
         return False
     try:
         from PyQt6.QtMultimedia import QMediaDevices
         if len(QMediaDevices.audioOutputs()) == 0:
             return False
-        # Actually try to create a player — this is what fails on missing plugins
-        QMediaPlayer()
+        # Try a real playback — catches missing codec plugins
+        import tempfile as _tf
+        test_player = QMediaPlayer()
+        test_output = QAudioOutput()
+        test_player.setAudioOutput(test_output)
+        with _tf.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            test_path = f.name
+        player.setSource(QUrl.fromLocalFile(test_path))
+        test_player.play()
+        test_player.stop()
+        import os
+        os.unlink(test_path)
         return True
     except Exception:
         return False
@@ -138,6 +148,15 @@ class AudioPlayer:
                 return True
 
         except Exception as e:
+            # First MP3 failure → permanently switch to pygame
+            if not _use_pygame:
+                logger.warning("QtMultimedia can't play MP3 (%s) — switching to pygame", e)
+                global _use_pygame
+                _use_pygame = True
+                _init_pygame()
+                self._player = None
+                self._output = None
+                return self.play_audio(audio_data)  # Retry with pygame
             logger.error("Failed to play audio: %s", e)
             self._is_playing = False
             cleanup()
