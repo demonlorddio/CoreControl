@@ -46,6 +46,7 @@ from PyQt6.QtGui import (
     QPolygon,
     QPixmap,
 )
+from PyQt6.QtCore import QUrl
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtWidgets import (
     QApplication,
@@ -636,7 +637,10 @@ class OverlayWidget(QWidget):
         self._large_screen = False
         self._fish_tts = None
         self._tts_language = "en"  # "en" or "ja"
+        # ── Audio ───────────────────────────────────────────────────────
         self._audio_player: Optional[QMediaPlayer] = None
+        self._audio_output: Optional[QAudioOutput] = None
+        self._use_audio_player = True  # True = QtMultimedia, False = pygame
         self._large_screen_w, self._large_screen_h = 700, 520
         self.setFixedSize(220, 280)
         self.move(initial_x, initial_y)
@@ -783,38 +787,76 @@ class OverlayWidget(QWidget):
                 )
 
                 if audio_data:
-                    # Play via QMediaPlayer
-                    if self._audio_player is None:
-                        self._audio_player = QMediaPlayer()
-                        self._audio_output = QAudioOutput()
-                        self._audio_player.setAudioOutput(self._audio_output)
+                    # Play audio with fallback from QtMultimedia to pygame
+                    if not self._play_audio_with_fallback(audio_data):
+                        logger.error("Failed to play audio")
 
-                    # Write to temp file
-                    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-                        f.write(audio_data)
-                        temp_path = f.name
-
-                    self._audio_player.setSource(QUrl.fromLocalFile(temp_path))
-                    self._audio_output.setVolume(0.8)
-                    self._audio_player.play()
-
-                    # Clean up temp file when done
-                    def cleanup():
-                        try:
-                            os.unlink(temp_path)
-                        except Exception:
-                            pass
-
-                    self._audio_player.mediaStatusChanged.connect(
-                        lambda status: cleanup()
-                        if status == QMediaPlayer.MediaStatus.EndOfMedia
-                        else None
-                    )
             except Exception as e:
                 logger.error("Fish Audio playback failed: %s", e)
 
         threading.Thread(target=_play_audio, daemon=True).start()
         return duration_ms
+
+    def _play_audio_with_fallback(self, audio_data: bytes) -> bool:
+        """Play audio with automatic fallback from QtMultimedia to pygame."""
+        import tempfile
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+                f.write(audio_data)
+                temp_path = f.name
+
+            def cleanup():
+                try:
+                    os.unlink(temp_path)
+                except Exception:
+                    pass
+
+            try:
+                if self._use_audio_player:
+                    # QtMultimedia path
+                    if self._audio_player is None:
+                        self._audio_player = QMediaPlayer()
+                        self._audio_output = QAudioOutput()
+                        self._audio_player.setAudioOutput(self._audio_output)
+                    self._audio_player.setSource(QUrl.fromLocalFile(temp_path))
+                    self._audio_output.setVolume(0.8)
+                    self._audio_player.play()
+                    self._audio_player.mediaStatusChanged.connect(
+                        lambda status: cleanup()
+                        if status == QMediaPlayer.MediaStatus.EndOfMedia
+                        else None
+                    )
+                    return True
+                else:
+                    # pygame-ce fallback
+                    import pygame
+                    if not pygame.mixer.get_init():
+                        pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+                    pygame.mixer.music.load(temp_path)
+                    pygame.mixer.music.set_volume(0.8)
+                    pygame.mixer.music.play()
+                    # Estimate duration and cleanup
+                    import threading
+                    duration_sec = max(len(audio_data) / 4096, 2.0)
+                    threading.Timer(duration_sec + 0.5, cleanup).start()
+                    return True
+            except Exception as e:
+                # Failed with Qt → switch to pygame
+                logger.warning("QtMultimedia failed (%s) — switching to pygame", e)
+                self._use_audio_player = False
+                if self._audio_player:
+                    try:
+                        self._audio_player.stop()
+                        self._audio_player.deleteLater()
+                    except Exception:
+                        pass
+                    self._audio_player = None
+                    self._audio_output = None
+                return self._play_audio_with_fallback(audio_data)  # Retry with pygame
+
+        except Exception as e:
+            logger.error("Failed to play audio: %s", e)
+            return False
 
     def _translate_to_japanese(self, text: str) -> str:
         """Translate text to Japanese using free translation APIs."""
@@ -999,8 +1041,14 @@ class OverlayWidget(QWidget):
 
     def _do_quit(self) -> None:
         # Stop any playing audio
-        if self._audio_player:
+        if self._use_audio_player and self._audio_player:
             self._audio_player.stop()
+        elif not self._use_audio_player:
+            try:
+                import pygame
+                pygame.mixer.music.stop()
+            except Exception:
+                pass
         if self._fish_tts:
             self._fish_tts.stop()
         self.app_closing.emit()
@@ -1008,8 +1056,14 @@ class OverlayWidget(QWidget):
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         # Stop audio on close
-        if self._audio_player:
+        if self._use_audio_player and self._audio_player:
             self._audio_player.stop()
+        elif not self._use_audio_player:
+            try:
+                import pygame
+                pygame.mixer.music.stop()
+            except Exception:
+                pass
         if self._fish_tts:
             self._fish_tts.stop()
         super().closeEvent(event)
