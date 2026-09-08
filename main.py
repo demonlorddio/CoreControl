@@ -109,10 +109,14 @@ class HotkeyTrigger:
         return ctrl_down and space_down
 
 
-# ── Qt Overlay Thread ─────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+_main_loop: asyncio.AbstractEventLoop | None = None
+
 
 def _run_overlay_thread(
-    orchestrator_future: asyncio.Future,
+    orch_handle: list,
+    orch_ready: threading.Event,
     overlay_cfg: dict,
 ) -> None:
     """
@@ -121,7 +125,6 @@ def _run_overlay_thread(
     """
     try:
         from PyQt6.QtWidgets import QApplication
-        from PyQt6.QtCore import QTimer
         from src.gui.overlay import OverlayWidget, NPCState, HitlRequest
         from src.gui.audio_recorder import AudioRecorder
 
@@ -140,18 +143,19 @@ def _run_overlay_thread(
             """Handle voice transcription result."""
             if not text or not text.strip():
                 return
+            orch = orch_handle[0]
+            if orch is None:
+                logger.warning("Orchestrator not ready yet, dropping transcription")
+                return
+            if not _main_loop or not _main_loop.is_running():
+                logger.warning("Main event loop not running, dropping transcription")
+                return
+
             overlay.set_state(NPCState.PROCESSING)
             overlay.speak("Analysis in progress…", duration_ms=0)
 
-            async def _run():
-                orch = orchestrator_future.result()
-                result = await orch.process_prompt(text)
-                logger.info("Great Sage response: %s", result.text[:150])
-                overlay.set_state(NPCState.SPEAKING)
-                overlay.speak(result.text)
-                overlay.set_state(NPCState.IDLE)
-
-            asyncio.run_coroutine_threadsafe(_run(), _main_loop)
+            coro = orch.process_prompt(text)
+            asyncio.run_coroutine_threadsafe(coro, _main_loop)
 
         def _handle_hotkey() -> None:
             """Triggered when Ctrl+Space is pressed."""
@@ -169,7 +173,10 @@ def _run_overlay_thread(
 
         # Connect HITL signal
         def _on_hitl_request(request: HitlRequest) -> None:
-            orch = orchestrator_future.result()
+            orch = orch_handle[0]
+            if orch is None:
+                logger.warning("Orchestrator not ready, dropping HITL request")
+                return
             overlay.request_hitl(request, lambda result: orch.handle_hitl_response(
                 request.request_id, result.get("approved", False), result.get("args")
             ))
@@ -189,6 +196,9 @@ def _run_overlay_thread(
 
         overlay.app_closing.connect(_on_close)
 
+        # Wait until orchestrator is ready (or timeout)
+        orch_ready.wait(timeout=10)
+
         # Run Qt event loop
         ret = app.exec()
 
@@ -203,22 +213,19 @@ def _run_overlay_thread(
         logger.error("Overlay thread error: %s", exc, exc_info=True)
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-
-_main_loop: asyncio.AbstractEventLoop | None = None
-
-
 def main() -> None:
     global _main_loop
 
     overlay_cfg = _settings.get("overlay", {})
 
-    # Start Qt overlay thread FIRST (Qt must be in the main thread)
-    orchestrator_future: asyncio.Future = asyncio.get_event_loop().create_future()
+    # Shared orchestrator handle — set by async main, read by overlay thread.
+    # Using a plain list avoids asyncio.Future() (needs a running loop).
+    _orch_handle: list = [None]  # _orch_handle[0] = Orchestrator instance
+    _orch_ready = threading.Event()
 
     overlay_thread = threading.Thread(
         target=_run_overlay_thread,
-        args=(orchestrator_future, overlay_cfg),
+        args=(_orch_handle, _orch_ready, overlay_cfg),
         daemon=True,
         name="overlay",
     )
@@ -235,17 +242,13 @@ def main() -> None:
         from src.orchestrator import Orchestrator
 
         orch = Orchestrator()
-        orchestrator_future.set_result(orch)
+        _orch_handle[0] = orch
+        _orch_ready.set()  # signal overlay thread that orchestrator is ready
         await orch.start()
 
         # Keep the event loop alive until the overlay thread signals shutdown
         shutdown_event = asyncio.Event()
 
-        def _check_shutdown() -> None:
-            if not overlay_thread.is_alive():
-                shutdown_event.set()
-
-        # Handle signals for clean shutdown
         def _signal_handler() -> None:
             logger.info("Received shutdown signal")
             shutdown_event.set()
