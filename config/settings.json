@@ -24,7 +24,7 @@
   },
   "online_llm": {
     "provider": "omni-route",
-    "api_key": "",
+    "api_key": "sk-c4b605d1bed6dbc2-ea5dcd-13b198a2",
     "api_base_url": "http://localhost:20128/v1",
     "model": "auto",
     "max_tokens": 4096,
@@ -63,6 +63,11 @@
     "vad_threshold": 0.5,
     "min_silence_duration_ms": 1000,
     "transcription_model": "base.en"
+  },
+  "fish_audio": {
+    "api_key": "",
+    "model_id": "2c8b612163a24831b0db6675ff4ebb9b",
+    "language": "en"
   },
   "logging": {
     "level": "INFO",

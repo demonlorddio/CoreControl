@@ -46,6 +46,7 @@ from PyQt6.QtGui import (
     QPolygon,
     QPixmap,
 )
+from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -633,7 +634,9 @@ class OverlayWidget(QWidget):
 
         # ── Size ────────────────────────────────────────────────────────
         self._large_screen = False
-        self._tts_engine = None
+        self._fish_tts = None
+        self._tts_language = "en"  # "en" or "ja"
+        self._audio_player: Optional[QMediaPlayer] = None
         self._large_screen_w, self._large_screen_h = 700, 520
         self.setFixedSize(220, 280)
         self.move(initial_x, initial_y)
@@ -663,6 +666,23 @@ class OverlayWidget(QWidget):
         act_quit = self._tray_menu.addAction("Quit")
         act_quit.triggered.connect(self._do_quit)
 
+        # ── Audio Language Menu ─────────────────────────────────────────
+        self._lang_menu = QMenu("Audio Language", self._tray_menu)
+        self._lang_menu.setStyleSheet(
+            "QMenu { background: rgba(20, 30, 50, 230); color: rgba(200, 230, 255, 220); "
+            "border: 1px solid rgba(100, 150, 255, 180); border-radius: 6px; padding: 4px; }"
+            "QMenu::item { padding: 6px 20px; font-family: Consolas; font-size: 11px; }"
+            "QMenu::item:selected { background: rgba(60, 100, 180, 160); border-radius: 4px; }"
+        )
+        self._lang_en = self._lang_menu.addAction("English")
+        self._lang_en.triggered.connect(lambda: self._set_tts_language("en"))
+        self._lang_ja = self._lang_menu.addAction("日本語")
+        self._lang_ja.triggered.connect(lambda: self._set_tts_language("ja"))
+        self._lang_menu.addSeparator()
+        self._lang_status = self._lang_menu.addAction("Status: English")
+        self._lang_status.setEnabled(False)
+        self._tray_menu.addMenu(self._lang_menu)
+
         self._tray = QSystemTrayIcon(self)
         # Set a minimal icon so the tray shows something
         _icon_pix = QPixmap(16, 16)
@@ -682,67 +702,151 @@ class OverlayWidget(QWidget):
         elif state == NPCState.IDLE:
             self._bubble.clear()
 
-    def _init_tts(self) -> None:
-        """Initialize pyttsx3 TTS engine with a deep, authoritative voice."""
+    def _init_fish_tts(self) -> bool:
+        """Initialize Fish Audio TTS engine with Great Sage voice model."""
+        if self._fish_tts is not None:
+            return True
         try:
-            import pyttsx3
-            engine = pyttsx3.init()
-            # Enumerate voices and pick the deepest-sounding male voice
-            voices = engine.getProperty("voices")
-            preferred = None
-            for v in voices:
-                vid = v.id.lower()
-                vname = v.name.lower()
-                # Prefer male/deep voices (David, Mark, etc.)
-                if any(k in vname for k in ("david", "mark", "male", "deep")):
-                    if preferred is None or "david" in vname:
-                        preferred = v
-                        if "david" in vname:
-                            break
-                elif preferred is None:
-                    preferred = v
-            if preferred:
-                engine.setProperty("voice", preferred.id)
-                logger.info("TTS voice set to: %s", preferred.id)
-            else:
-                # Fallback: use default, log message for user
-                logger.warning(
-                    "No preferred male/deep voice found. Using default TTS voice. "
-                    "To change: engine.setProperty('voice', <voice_id>). "
-                    "Available voices: %s",
-                    [v.id for v in voices],
-                )
-            engine.setProperty("rate", 140)  # Slightly slower for clarity
-            self._tts_engine = engine
-        except ImportError:
-            logger.warning("pyttsx3 not installed — TTS disabled. Run: pip install pyttsx3")
-        except Exception as exc:
-            logger.warning("TTS initialization failed: %s", exc)
+            from ..tts.fish_audio import FishAudioTTS
 
-    def _speak_tts(self, text: str) -> int:
-        """Speak text via TTS and return estimated display duration in ms."""
-        if self._tts_engine is None:
-            self._init_tts()
-        if self._tts_engine is None:
+            # Load settings
+            import json
+            from pathlib import Path
+            settings_path = Path(__file__).resolve().parent.parent.parent / "config" / "settings.json"
+            with open(settings_path) as f:
+                settings = json.load(f)
+            fish_config = settings.get("fish_audio", {})
+            api_key = fish_config.get("api_key", "")
+
+            if not api_key:
+                logger.warning("Fish Audio API key not configured in settings.json")
+                return False
+
+            self._fish_tts = FishAudioTTS(api_key=api_key)
+            lang = fish_config.get("language", "en")
+            self._fish_tts.language = lang
+            self._tts_language = lang
+            logger.info("Fish Audio TTS initialized with Great Sage voice (lang=%s)", lang)
+            return True
+        except ImportError as e:
+            logger.warning("Fish Audio SDK not installed — TTS disabled: %s", e)
+            return False
+        except Exception as exc:
+            logger.warning("Fish Audio TTS initialization failed: %s", exc)
+            return False
+
+    def _speak_fish(self, text: str) -> int:
+        """
+        Speak text via Fish Audio TTS.
+        Returns estimated display duration in ms (for bubble timing).
+        """
+        if self._fish_tts is None and not self._init_fish_tts():
             return self._estimated_duration_ms(text)
-        # Estimate duration based on word count at ~140 wpm + 20% padding
+
+        if self._fish_tts is None:
+            return self._estimated_duration_ms(text)
+
+        # Estimate duration based on text length
         duration_ms = self._estimated_duration_ms(text)
-        # Speak asynchronously so UI stays responsive
-        threading.Thread(
-            target=self._tts_engine.say, args=(text,), daemon=True
-        ).start()
-        self._tts_engine.runAndWait()
+
+        # Play audio asynchronously
+        def _play_audio():
+            try:
+                import tempfile
+                import os
+                from PyQt6.QtCore import QUrl
+
+                # Translate if Japanese
+                if self._tts_language == "ja":
+                    text_to_speak = self._translate_to_japanese(text)
+                else:
+                    text_to_speak = text
+
+                # Generate audio
+                audio_data = self._fish_tts._generate_or_get_audio(
+                    text_to_speak,
+                    self._fish_tts._cache_dir / f"{hash(text_to_speak) & 0xFFFFFFFF:08x}.mp3"
+                )
+
+                if audio_data:
+                    # Play via QMediaPlayer
+                    if self._audio_player is None:
+                        self._audio_player = QMediaPlayer()
+                        self._audio_output = QAudioOutput()
+                        self._audio_player.setAudioOutput(self._audio_output)
+
+                    # Write to temp file
+                    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+                        f.write(audio_data)
+                        temp_path = f.name
+
+                    self._audio_player.setSource(QUrl.fromLocalFile(temp_path))
+                    self._audio_output.setVolume(0.8)
+                    self._audio_player.play()
+
+                    # Clean up temp file when done
+                    def cleanup():
+                        try:
+                            os.unlink(temp_path)
+                        except Exception:
+                            pass
+
+                    self._audio_player.mediaStatusChanged.connect(
+                        lambda status: cleanup()
+                        if status == QMediaPlayer.MediaStatus.EndOfMedia
+                        else None
+                    )
+            except Exception as e:
+                logger.error("Fish Audio playback failed: %s", e)
+
+        threading.Thread(target=_play_audio, daemon=True).start()
         return duration_ms
+
+    def _translate_to_japanese(self, text: str) -> str:
+        """Translate text to Japanese using free translation APIs."""
+        # Check known translations first
+        KNOWN_TRANSLATIONS = {
+            "Notice, Master.": "マスター、ご通知いたします。",
+            "Report.": "報告いたします。",
+            "Analysis completed.": "分析を完了しました。",
+            "All systems operational.": "全システム稼働中です。",
+            "I have analyzed the current system state.": "現在のシステム状態を分析しました。",
+            "All systems are operational.": "すべてのシステムが稼働しています。",
+            "System status check complete.": "システム状態チェック完了。",
+            "Processing your request, Master.": "リクエストを処理いたします、マスター。",
+            "The analysis is complete.": "分析は完了しました。",
+            "Visual analysis completed.": "視覚分析を完了しました、マスター。",
+            "Awaiting your command.": "ご命令をお待ちしております。",
+            "Stand by, Master.": "スタンバイ、マスター。",
+            "Connecting to the network.": "ネットワークに接続中。",
+        }
+
+        if text in KNOWN_TRANSLATIONS:
+            return KNOWN_TRANSLATIONS[text]
+
+        # Try Google Translate via translators library
+        try:
+            import translators
+            translated = translators.translate_text(text, translator="google", to_language="ja")
+            if translated and translated != text:
+                logger.info("Translated to Japanese: %s -> %s", text[:50], translated[:50])
+                return translated
+        except Exception as e:
+            logger.debug("Translation failed (will use original): %s", e)
+
+        logger.warning("Could not translate to Japanese, using original text")
+        return text
 
     @staticmethod
     def _estimated_duration_ms(text: str) -> int:
-        """Estimate TTS duration from word count at 140 wpm with 20% padding, min 5000ms."""
+        """Estimate TTS duration from word count at ~160 wpm (Fish Audio is faster), min 3000ms."""
         word_count = len(text.split())
-        seconds = (word_count / 140.0) * 60.0 * 1.2  # wpm → seconds, +20% padding
-        return max(int(seconds * 1000), 5000)
+        # Fish Audio speaks more naturally, ~160-180 wpm
+        duration_ms = max(int((word_count / 160.0) * 60.0 * 1000), 3000)
+        return duration_ms
 
     def speak(self, text: str, duration_ms: int = 0) -> None:
-        """Display text in the speech bubble and speak via TTS."""
+        """Display text in the speech bubble and speak via Fish Audio TTS."""
         import logging
         logger = logging.getLogger("corecontrol.overlay")
         logger.info("speak() called with: %r", text[:80])
@@ -750,14 +854,24 @@ class OverlayWidget(QWidget):
         self._bubble.speak(text)
         self._reposition_bubble()
         self._speech_timer.stop()
-        # Use TTS-driven duration instead of fixed timer
-        tts_duration = self._speak_tts(text)
+        # Use Fish Audio TTS-driven duration
+        tts_duration = self._speak_fish(text)
         if duration_ms > 0:
             # User specified explicit duration — use max of that and TTS estimate
             tts_duration = max(tts_duration, duration_ms)
         self._speech_timer.start(tts_duration)
         # Resize widget to accommodate bubble
         self._update_widget_size()
+
+    def _set_tts_language(self, lang: str) -> None:
+        """Set TTS language and update menu display."""
+        self._tts_language = lang
+        if self._fish_tts:
+            self._fish_tts.language = lang
+        # Update menu status
+        lang_name = "English" if lang == "en" else "日本語"
+        self._lang_status.setText(f"Status: {lang_name}")
+        logger.info("TTS language set to: %s", lang_name)
 
     def on_avatar_clicked(self) -> None:
         """Triggered by right-click on avatar — starts voice capture."""
@@ -870,8 +984,21 @@ class OverlayWidget(QWidget):
         self.show()
 
     def _do_quit(self) -> None:
+        # Stop any playing audio
+        if self._audio_player:
+            self._audio_player.stop()
+        if self._fish_tts:
+            self._fish_tts.stop()
         self.app_closing.emit()
         QApplication.instance().quit()
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        # Stop audio on close
+        if self._audio_player:
+            self._audio_player.stop()
+        if self._fish_tts:
+            self._fish_tts.stop()
+        super().closeEvent(event)
 
     # ── Paint ─────────────────────────────────────────────────────────────────
 
