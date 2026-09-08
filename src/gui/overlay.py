@@ -801,13 +801,6 @@ class OverlayWidget(QWidget):
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
         # Transparent background — no box behind the avatar
         pass
-        grad = QLinearGradient(0, 0, 0, self.height())
-        grad.setColorAt(0, QColor(15, 25, 40, 190))
-        grad.setColorAt(1, QColor(8, 14, 24, 140))
-        p.setBrush(grad)
-        border = QColor(60, 100, 140, 100)
-        p.setPen(QPen(border, 1))
-        p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 15, 15)
 
     # ── Drag support ──────────────────────────────────────────────────────────
 
