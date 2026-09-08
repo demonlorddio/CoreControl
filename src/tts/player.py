@@ -118,6 +118,7 @@ class AudioPlayer:
                 self._player = None
                 self._output = None
                 self._is_playing = False
+        self._use_pygame = _use_pygame
 
     def play_audio(self, audio_data: bytes) -> bool:
         """
