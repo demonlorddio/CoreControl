@@ -723,11 +723,20 @@ class OverlayWidget(QWidget):
                 return False
 
             self._fish_tts = FishAudioTTS(api_key=api_key)
+            model_id = fish_config.get("model_id", "")
+            if model_id:
+                self._fish_tts._voice_model = model_id
             lang = fish_config.get("language", "en")
             self._fish_tts.language = lang
             self._tts_language = lang
-            logger.info("Fish Audio TTS initialized with Great Sage voice (lang=%s)", lang)
-            return True
+            # Pre-initialize session so it's ready for TTS calls
+            if self._fish_tts._ensure_session():
+                logger.info("Fish Audio TTS initialized with Great Sage voice (lang=%s)", lang)
+                return True
+            else:
+                logger.error("Fish Audio session initialization failed")
+                self._fish_tts = None
+                return False
         except ImportError as e:
             logger.warning("Fish Audio SDK not installed — TTS disabled: %s", e)
             return False
@@ -761,6 +770,11 @@ class OverlayWidget(QWidget):
                     text_to_speak = self._translate_to_japanese(text)
                 else:
                     text_to_speak = text
+
+                # Ensure session is initialized before TTS call
+                if not self._fish_tts._ensure_session():
+                    logger.error("Fish Audio session not available")
+                    return
 
                 # Generate audio
                 audio_data = self._fish_tts._generate_or_get_audio(

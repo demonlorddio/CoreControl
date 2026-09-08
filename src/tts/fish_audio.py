@@ -108,6 +108,9 @@ class FishAudioTTS:
         if not api_key:
             raise ValueError("Fish Audio API key not configured in settings.json")
         instance = cls(api_key=api_key)
+        model_id = fish_config.get("model_id", "")
+        if model_id:
+            instance._voice_model = model_id
         lang = fish_config.get("language", "en")
         instance.language = lang
         return instance
