@@ -93,7 +93,8 @@ class GreatSageAvatar(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self.setFixedSize(80, 90)
+        # Large avatar: 200×220 pixels
+        self.setFixedSize(200, 220)
 
         self._state = NPCState.IDLE
         self._bounce_offset: float = 0.0
@@ -101,7 +102,7 @@ class GreatSageAvatar(QWidget):
         self._core_hue: float = 200.0
         self._processing_spin: float = 0.0
 
-        # Load animated GIF
+        # Load animated GIF — scale to fit inside the 200×220 widget
         self._movie: Optional[QMovie] = None
         self._current_frame: QPixmap = QPixmap()
         gif_path = str(self._IMG_PATH)
@@ -113,7 +114,7 @@ class GreatSageAvatar(QWidget):
             first_frame = self._movie.currentPixmap()
             if not first_frame.isNull():
                 self._current_frame = first_frame.scaled(
-                    76, 86,
+                    190, 210,
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation,
                 )
@@ -181,7 +182,7 @@ class GreatSageAvatar(QWidget):
         pixmap = self._movie.currentPixmap() if self._movie else QPixmap()
         if not pixmap.isNull():
             self._current_frame = pixmap.scaled(
-                76, 86,
+                190, 210,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
@@ -197,7 +198,7 @@ class GreatSageAvatar(QWidget):
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        cx, cy = 40, 45 + self._bounce_offset
+        cx, cy = 100, 110 + self._bounce_offset
 
         # ── Image only (no glow overlay to avoid GIF flickering) ─────────
         if not self._current_frame.isNull():
@@ -207,8 +208,8 @@ class GreatSageAvatar(QWidget):
             p.drawPixmap(draw_x, draw_y, self._current_frame)
 
         # ── State indicator dot ──────────────────────────────────────────
-        body_bot = cy + 28
-        indicator_y = body_bot + 6
+        body_bot = cy + 80
+        indicator_y = body_bot + 8
         if self._state == NPCState.LISTENING:
             dot_color = QColor(80, 180, 255)
         elif self._state == NPCState.PROCESSING:
@@ -220,14 +221,14 @@ class GreatSageAvatar(QWidget):
         dot_color.setAlpha(180)
         p.setBrush(dot_color)
         p.setPen(Qt.PenStyle.NoPen)
-        p.drawEllipse(int(cx - 3), int(indicator_y), 6, 6)
+        p.drawEllipse(int(cx - 4), int(indicator_y), 8, 8)
 
         # ── Blink overlay (IDLE only) ────────────────────────────────────
         if self._state == NPCState.IDLE and self._is_blinking:
-            eye_y = int(cy - 10)
-            p.setPen(QPen(QColor(180, 210, 240, 200), 2, Qt.PenStyle.SolidLine))
-            p.drawLine(int(cx - 12), eye_y, int(cx - 6), eye_y)
-            p.drawLine(int(cx + 6), eye_y, int(cx + 12), eye_y)
+            eye_y = int(cy - 20)
+            p.setPen(QPen(QColor(180, 210, 240, 200), 3, Qt.PenStyle.SolidLine))
+            p.drawLine(int(cx - 24), eye_y, int(cx - 12), eye_y)
+            p.drawLine(int(cx + 12), eye_y, int(cx + 24), eye_y)
 
         p.end()
 
@@ -601,7 +602,7 @@ class OverlayWidget(QWidget):
 
         # ── Avatar ──────────────────────────────────────────────────────
         self._avatar = GreatSageAvatar(self)
-        self._avatar.setGeometry(10, 10, 80, 90)
+        self._avatar.setGeometry(10, 10, 200, 220)
 
         # ── Speech bubble ───────────────────────────────────────────────
         self._bubble = SpeechBubble(self)
@@ -611,8 +612,8 @@ class OverlayWidget(QWidget):
         # ── Text prompt input ──────────────────────────────────────────
         self._prompt_input = QLineEdit(self)
         self._prompt_input.setPlaceholderText("Type a prompt…")
-        self._prompt_input.setFixedSize(180, 26)
-        self._prompt_input.move(10, 106)
+        self._prompt_input.setFixedSize(190, 28)
+        self._prompt_input.move(10, 232)
         self._prompt_input.returnPressed.connect(self._submit_prompt)
         self._prompt_input.setStyleSheet(
             "QLineEdit { "
@@ -621,7 +622,7 @@ class OverlayWidget(QWidget):
             "    border: 1px solid rgba(100, 150, 255, 150); "
             "    border-radius: 4px; "
             "    padding: 2px 8px; "
-            "    font-size: 11px; "
+            "    font-size: 12px; "
             "    font-family: Consolas; "
             "} "
             "QLineEdit:focus { "
@@ -631,7 +632,10 @@ class OverlayWidget(QWidget):
         )
 
         # ── Size ────────────────────────────────────────────────────────
-        self.setFixedSize(200, 140)
+        self._large_screen = False
+        self._tts_engine = None
+        self._large_screen_w, self._large_screen_h = 700, 520
+        self.setFixedSize(220, 280)
         self.move(initial_x, initial_y)
 
         # ── Auto-hide speech timer ──────────────────────────────────────
@@ -654,6 +658,8 @@ class OverlayWidget(QWidget):
         act_hide.triggered.connect(self._do_hide)
         act_top = self._tray_menu.addAction("Show on Top" if self._show_on_top else "Always on Top")
         act_top.triggered.connect(self._toggle_show_on_top)
+        self._large_screen_act = self._tray_menu.addAction("Large Screen  (off)")
+        self._large_screen_act.triggered.connect(self._toggle_large_screen)
         act_quit = self._tray_menu.addAction("Quit")
         act_quit.triggered.connect(self._do_quit)
 
@@ -676,8 +682,67 @@ class OverlayWidget(QWidget):
         elif state == NPCState.IDLE:
             self._bubble.clear()
 
-    def speak(self, text: str, duration_ms: int = 8000) -> None:
-        """Display text in the speech bubble."""
+    def _init_tts(self) -> None:
+        """Initialize pyttsx3 TTS engine with a deep, authoritative voice."""
+        try:
+            import pyttsx3
+            engine = pyttsx3.init()
+            # Enumerate voices and pick the deepest-sounding male voice
+            voices = engine.getProperty("voices")
+            preferred = None
+            for v in voices:
+                vid = v.id.lower()
+                vname = v.name.lower()
+                # Prefer male/deep voices (David, Mark, etc.)
+                if any(k in vname for k in ("david", "mark", "male", "deep")):
+                    if preferred is None or "david" in vname:
+                        preferred = v
+                        if "david" in vname:
+                            break
+                elif preferred is None:
+                    preferred = v
+            if preferred:
+                engine.setProperty("voice", preferred.id)
+                logger.info("TTS voice set to: %s", preferred.id)
+            else:
+                # Fallback: use default, log message for user
+                logger.warning(
+                    "No preferred male/deep voice found. Using default TTS voice. "
+                    "To change: engine.setProperty('voice', <voice_id>). "
+                    "Available voices: %s",
+                    [v.id for v in voices],
+                )
+            engine.setProperty("rate", 140)  # Slightly slower for clarity
+            self._tts_engine = engine
+        except ImportError:
+            logger.warning("pyttsx3 not installed — TTS disabled. Run: pip install pyttsx3")
+        except Exception as exc:
+            logger.warning("TTS initialization failed: %s", exc)
+
+    def _speak_tts(self, text: str) -> int:
+        """Speak text via TTS and return estimated display duration in ms."""
+        if self._tts_engine is None:
+            self._init_tts()
+        if self._tts_engine is None:
+            return self._estimated_duration_ms(text)
+        # Estimate duration based on word count at ~140 wpm + 20% padding
+        duration_ms = self._estimated_duration_ms(text)
+        # Speak asynchronously so UI stays responsive
+        threading.Thread(
+            target=self._tts_engine.say, args=(text,), daemon=True
+        ).start()
+        self._tts_engine.runAndWait()
+        return duration_ms
+
+    @staticmethod
+    def _estimated_duration_ms(text: str) -> int:
+        """Estimate TTS duration from word count at 140 wpm with 20% padding, min 5000ms."""
+        word_count = len(text.split())
+        seconds = (word_count / 140.0) * 60.0 * 1.2  # wpm → seconds, +20% padding
+        return max(int(seconds * 1000), 5000)
+
+    def speak(self, text: str, duration_ms: int = 0) -> None:
+        """Display text in the speech bubble and speak via TTS."""
         import logging
         logger = logging.getLogger("corecontrol.overlay")
         logger.info("speak() called with: %r", text[:80])
@@ -685,8 +750,12 @@ class OverlayWidget(QWidget):
         self._bubble.speak(text)
         self._reposition_bubble()
         self._speech_timer.stop()
+        # Use TTS-driven duration instead of fixed timer
+        tts_duration = self._speak_tts(text)
         if duration_ms > 0:
-            self._speech_timer.start(duration_ms)
+            # User specified explicit duration — use max of that and TTS estimate
+            tts_duration = max(tts_duration, duration_ms)
+        self._speech_timer.start(tts_duration)
         # Resize widget to accommodate bubble
         self._update_widget_size()
 
@@ -723,12 +792,30 @@ class OverlayWidget(QWidget):
 
     def _update_widget_size(self) -> None:
         """Expand widget to fit speech bubble if needed."""
+        if self._large_screen:
+            return  # Large screen mode handles its own sizing
         bubble_w = self._bubble.width()
         bubble_h = self._bubble.height()
-        new_w = max(self.width(), 100 + bubble_w + 20)
-        new_h = max(self.height(), 100 + bubble_h + 10)
+        new_w = max(self.width(), 220 + bubble_w + 20)
+        new_h = max(self.height(), 280 + bubble_h + 10)
         if new_w != self.width() or new_h != self.height():
             self.setFixedSize(new_w, new_h)
+
+    def _toggle_large_screen(self) -> None:
+        """Toggle between normal (220×280) and large screen (700×520) modes."""
+        self._large_screen = not self._large_screen
+        if self._large_screen:
+            self.setFixedSize(self._large_screen_w, self._large_screen_h)
+            self._avatar.setGeometry(10, 10, 200, 220)
+            self._prompt_input.move(10, 232)
+            self._large_screen_act.setText("Large Screen  (on)")
+        else:
+            self.setFixedSize(220, 280)
+            self._avatar.setGeometry(10, 10, 200, 220)
+            self._prompt_input.move(10, 232)
+            self._large_screen_act.setText("Large Screen  (off)")
+        self._reposition_bubble()
+        self._update_widget_size()
 
     def _submit_prompt(self) -> None:
         """Submit text from the input field."""
