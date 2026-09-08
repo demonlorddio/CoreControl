@@ -37,6 +37,7 @@ from PyQt6.QtGui import (
     QColor,
     QFont,
     QFontMetrics,
+    QIcon,
     QMovie,
     QMouseEvent,
     QPainter,
@@ -55,6 +56,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QVBoxLayout,
     QMenu,
+    QSystemTrayIcon,
     QWidget,
 )
 
@@ -121,7 +123,8 @@ class GreatSageAvatar(QWidget):
         # Animation timers
         self._bounce_timer = QTimer(self)
         self._bounce_timer.timeout.connect(self._tick_bounce)
-        self._bounce_timer.start(50)
+        # Start disabled — enable only when needed
+        # self._bounce_timer.start(50)
 
         self._processing_timer = QTimer(self)
         self._processing_timer.timeout.connect(self._tick_processing)
@@ -184,6 +187,13 @@ class GreatSageAvatar(QWidget):
             )
         self.update()
 
+    def set_bounce(self, enabled: bool) -> None:
+        """Enable or disable the bounce animation."""
+        if enabled:
+            self._bounce_timer.start(50)
+        else:
+            self._bounce_timer.stop()
+
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -199,11 +209,11 @@ class GreatSageAvatar(QWidget):
         # ── State indicator dot ──────────────────────────────────────────
         body_bot = cy + 28
         indicator_y = body_bot + 6
-        if st == NPCState.LISTENING:
+        if self._state == NPCState.LISTENING:
             dot_color = QColor(80, 180, 255)
-        elif st == NPCState.PROCESSING:
+        elif self._state == NPCState.PROCESSING:
             dot_color = QColor(255, 200, 80)
-        elif st == NPCState.SPEAKING:
+        elif self._state == NPCState.SPEAKING:
             dot_color = QColor(100, 220, 180)
         else:
             dot_color = QColor(60, 120, 180)
@@ -213,7 +223,7 @@ class GreatSageAvatar(QWidget):
         p.drawEllipse(int(cx - 3), int(indicator_y), 6, 6)
 
         # ── Blink overlay (IDLE only) ────────────────────────────────────
-        if st == NPCState.IDLE and self._is_blinking:
+        if self._state == NPCState.IDLE and self._is_blinking:
             eye_y = int(cy - 10)
             p.setPen(QPen(QColor(180, 210, 240, 200), 2, Qt.PenStyle.SolidLine))
             p.drawLine(int(cx - 12), eye_y, int(cx - 6), eye_y)
@@ -593,36 +603,6 @@ class OverlayWidget(QWidget):
         self._avatar = GreatSageAvatar(self)
         self._avatar.setGeometry(10, 10, 80, 90)
 
-        # ── Control button (top-right, "^") ─────────────────────────────
-        self._ctrl_btn = QPushButton("^", self)
-        self._ctrl_btn.setFixedSize(22, 22)
-        self._ctrl_btn.move(self.width() - 28, 6)
-        self._ctrl_btn.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
-        self._ctrl_btn.setStyleSheet(
-            "QPushButton { "
-            "    background: qradialgradient(cx:0.5, cy:0.5, radius:0.8, "
-            "                                  fx:0.3, fy:0.3, "
-            "                                  stop:0 rgba(80, 130, 220, 255), "
-            "                                  stop:1 rgba(30, 60, 130, 255)); "
-            "    color: rgba(255, 255, 255, 255); "
-            "    border: 2px solid rgba(140, 190, 255, 255); "
-            "    border-radius: 11px; "
-            "    font-size: 14px; "
-            "    font-weight: bold; "
-            "} "
-            "QPushButton:hover { "
-            "    background: qradialgradient(cx:0.5, cy:0.5, radius:0.8, "
-            "                                  fx:0.3, fy:0.3, "
-            "                                  stop:0 rgba(110, 160, 255, 255), "
-            "                                  stop:1 rgba(50, 90, 180, 255)); "
-            "    border-color: rgba(180, 220, 255, 255); "
-            "} "
-            "QPushButton:pressed { "
-            "    background: rgba(20, 50, 120, 255); "
-            "}"
-        )
-        self._ctrl_btn.clicked.connect(self._show_ctrl_menu)
-
         # ── Speech bubble ───────────────────────────────────────────────
         self._bubble = SpeechBubble(self)
         self._bubble.set_font(QFont("Consolas", 10))
@@ -659,6 +639,32 @@ class OverlayWidget(QWidget):
         self._speech_timer.setSingleShot(True)
         self._speech_timer.timeout.connect(self._clear_speech)
         self._speech_timer.setInterval(8000)
+
+        # ── System Tray ─────────────────────────────────────────────────
+        self._tray_menu = QMenu(self)
+        self._tray_menu.setStyleSheet(
+            "QMenu { background: rgba(20, 30, 50, 230); color: rgba(200, 230, 255, 220); "
+            "border: 1px solid rgba(100, 150, 255, 180); border-radius: 6px; padding: 4px; }"
+            "QMenu::item { padding: 6px 20px; font-family: Consolas; font-size: 11px; }"
+            "QMenu::item:selected { background: rgba(60, 100, 180, 160); border-radius: 4px; }"
+        )
+        act_show = self._tray_menu.addAction("Show")
+        act_show.triggered.connect(self._do_show)
+        act_hide = self._tray_menu.addAction("Hide")
+        act_hide.triggered.connect(self._do_hide)
+        act_top = self._tray_menu.addAction("Show on Top" if self._show_on_top else "Always on Top")
+        act_top.triggered.connect(self._toggle_show_on_top)
+        act_quit = self._tray_menu.addAction("Quit")
+        act_quit.triggered.connect(self._do_quit)
+
+        self._tray = QSystemTrayIcon(self)
+        # Set a minimal icon so the tray shows something
+        _icon_pix = QPixmap(16, 16)
+        _icon_pix.fill(QColor(30, 60, 120))
+        self._tray.setIcon(QIcon(_icon_pix))
+        self._tray.setContextMenu(self._tray_menu)
+        self._tray.activated.connect(self._on_tray_activated)
+        self._tray.show()
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -723,11 +729,6 @@ class OverlayWidget(QWidget):
         new_h = max(self.height(), 100 + bubble_h + 10)
         if new_w != self.width() or new_h != self.height():
             self.setFixedSize(new_w, new_h)
-            self._reposition_ctrl_btn()
-
-    def _reposition_ctrl_btn(self) -> None:
-        """Keep the control button pinned to the top-right corner."""
-        self._ctrl_btn.move(self.width() - 28, 6)
 
     def _submit_prompt(self) -> None:
         """Submit text from the input field."""
@@ -756,28 +757,17 @@ class OverlayWidget(QWidget):
         self._hitl_modal = None
         self._hitl_waiting.pop(request_id, None)
 
-    def _show_ctrl_menu(self) -> None:
-        """Show the popup menu for the control button."""
-        menu = QMenu(self)
-        menu.setStyleSheet(
-            "QMenu { background: rgba(20, 30, 50, 230); color: rgba(200, 230, 255, 220); "
-            "border: 1px solid rgba(100, 150, 255, 180); border-radius: 6px; padding: 4px; }"
-            "QMenu::item { padding: 6px 20px; font-family: Consolas; font-size: 11px; }"
-            "QMenu::item:selected { background: rgba(60, 100, 180, 160); border-radius: 4px; }"
-        )
+    def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        """Handle tray icon clicks."""
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self._do_show()
+        elif reason == QSystemTrayIcon.ActivationReason.Context:
+            self._tray_menu.exec(QPoint())
 
-        act_hide = menu.addAction("Hide")
-        act_hide.setShortcut("H")
-        act_hide.triggered.connect(self._do_hide)
-
-        act_top = menu.addAction("Show on Top" if self._show_on_top else "Always on Top")
-        act_top.triggered.connect(self._toggle_show_on_top)
-
-        act_quit = menu.addAction("Quit")
-        act_quit.setShortcut("Q")
-        act_quit.triggered.connect(self._do_quit)
-
-        menu.exec(self.mapToGlobal(QPoint(10, 90)))
+    def _do_show(self) -> None:
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     def _do_hide(self) -> None:
         self.hide()
