@@ -233,10 +233,10 @@ class FishAudioTTS:
         import asyncio
 
         def _is_japanese(text: str) -> bool:
-            """Check if text contains Japanese characters."""
+            """Check if text contains Japanese characters (hiragana, katakana, kanji, half-width)."""
             for ch in text:
                 cp = ord(ch)
-                if (0x3040 <= cp <= 0x30FF) or (0xFF00 <= cp <= 0xFF9F):
+                if (0x3040 <= cp <= 0x30FF) or (0xFF00 <= cp <= 0xFF9F) or (0x4E00 <= cp <= 0x9FFF):
                     return True
             return False
 
