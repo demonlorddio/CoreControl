@@ -640,7 +640,7 @@ class OverlayWidget(QWidget):
         # ── Audio ───────────────────────────────────────────────────────
         self._audio_player: Optional[QMediaPlayer] = None
         self._audio_output: Optional[QAudioOutput] = None
-        self._use_audio_player = True  # True = QtMultimedia, False = pygame
+        self._use_audio_player = False  # True = QtMultimedia, False = pygame (QtMultimedia unavailable on this system)
         self._large_screen_w, self._large_screen_h = 700, 520
         self.setFixedSize(220, 280)
         self.move(initial_x, initial_y)
@@ -751,7 +751,8 @@ class OverlayWidget(QWidget):
     def _speak_fish(self, text: str) -> int:
         """
         Speak text via Fish Audio TTS.
-        Returns estimated display duration in ms (for bubble timing).
+        Returns estimated display duration in ms (for bubble timing safety-net).
+        The bubble is cleared when audio actually finishes, not on this estimate.
         """
         if self._fish_tts is None and not self._init_fish_tts():
             return self._estimated_duration_ms(text)
@@ -759,15 +760,15 @@ class OverlayWidget(QWidget):
         if self._fish_tts is None:
             return self._estimated_duration_ms(text)
 
-        # Estimate duration based on text length
+        # Estimate duration based on text length (used as safety-net timer)
         duration_ms = self._estimated_duration_ms(text)
 
-        # Play audio asynchronously
+        # Play audio asynchronously; clear bubble only after audio ends
         def _play_audio():
             try:
                 import tempfile
                 import os
-                from PyQt6.QtCore import QUrl
+                from PyQt6.QtCore import QUrl, QTimer
 
                 # Translate if Japanese
                 if self._tts_language == "ja":
@@ -788,8 +789,10 @@ class OverlayWidget(QWidget):
 
                 if audio_data:
                     # Play audio with fallback from QtMultimedia to pygame
-                    if not self._play_audio_with_fallback(audio_data):
-                        logger.error("Failed to play audio")
+                    played = self._play_audio_with_fallback(audio_data)
+                    if played:
+                        # Schedule bubble clear AFTER audio actually finishes
+                        QTimer.singleShot(duration_ms + 500, self._clear_speech)
 
             except Exception as e:
                 logger.error("Fish Audio playback failed: %s", e)
@@ -801,7 +804,9 @@ class OverlayWidget(QWidget):
         """Play audio with automatic fallback from QtMultimedia to pygame."""
         import tempfile
         try:
-            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            # Use .wav extension — pyttsx3 generates WAV bytes; .mp3 extension
+            # causes pygame to throw "Out of memory" due to codec mismatch.
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                 f.write(audio_data)
                 temp_path = f.name
 
@@ -811,48 +816,50 @@ class OverlayWidget(QWidget):
                 except Exception:
                     pass
 
-            try:
-                if self._use_audio_player:
-                    # QtMultimedia path
-                    if self._audio_player is None:
-                        self._audio_player = QMediaPlayer()
-                        self._audio_output = QAudioOutput()
-                        self._audio_player.setAudioOutput(self._audio_output)
-                    self._audio_player.setSource(QUrl.fromLocalFile(temp_path))
-                    self._audio_output.setVolume(0.8)
-                    self._audio_player.play()
-                    self._audio_player.mediaStatusChanged.connect(
-                        lambda status: cleanup()
-                        if status == QMediaPlayer.MediaStatus.EndOfMedia
-                        else None
-                    )
-                    return True
-                else:
-                    # pygame-ce fallback
-                    import pygame
-                    if not pygame.mixer.get_init():
-                        pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
-                    pygame.mixer.music.load(temp_path)
-                    pygame.mixer.music.set_volume(0.8)
-                    pygame.mixer.music.play()
-                    # Estimate duration and cleanup
-                    import threading
-                    duration_sec = max(len(audio_data) / 4096, 2.0)
-                    threading.Timer(duration_sec + 0.5, cleanup).start()
-                    return True
-            except Exception as e:
-                # Failed with Qt → switch to pygame
-                logger.warning("QtMultimedia failed (%s) — switching to pygame", e)
-                self._use_audio_player = False
-                if self._audio_player:
-                    try:
-                        self._audio_player.stop()
-                        self._audio_player.deleteLater()
-                    except Exception:
-                        pass
-                    self._audio_player = None
-                    self._audio_output = None
-                return self._play_audio_with_fallback(audio_data)  # Retry with pygame
+            # Iterative fallback: try Qt first if enabled, then pygame.
+            # Max 2 attempts — prevents infinite recursion if both fail.
+            for attempt in (["qt", "pygame"] if self._use_audio_player else ["pygame"]):
+                try:
+                    if attempt == "qt":
+                        # QtMultimedia path
+                        if self._audio_player is None:
+                            self._audio_player = QMediaPlayer()
+                            self._audio_output = QAudioOutput()
+                            self._audio_player.setAudioOutput(self._audio_output)
+                        self._audio_player.setSource(QUrl.fromLocalFile(temp_path))
+                        self._audio_output.setVolume(0.8)
+                        self._audio_player.play()
+                        self._audio_player.mediaStatusChanged.connect(
+                            lambda status, c=cleanup: c()
+                            if status == QMediaPlayer.MediaStatus.EndOfMedia
+                            else None
+                        )
+                        return True
+                    else:
+                        # pygame-ce fallback
+                        import pygame
+                        if not pygame.mixer.get_init():
+                            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+                        pygame.mixer.music.load(temp_path)
+                        pygame.mixer.music.set_volume(0.8)
+                        pygame.mixer.music.play()
+                        import threading
+                        duration_sec = max(len(audio_data) / 44100 * 4, 2.0)
+                        threading.Timer(duration_sec + 0.5, cleanup).start()
+                        return True
+                except Exception as e:
+                    logger.warning("Audio playback failed via %s (%s)", attempt, e)
+                    if self._audio_player:
+                        try:
+                            self._audio_player.stop()
+                            self._audio_player.deleteLater()
+                        except Exception:
+                            pass
+                        self._audio_player = None
+                        self._audio_output = None
+            # Both attempts failed
+            cleanup()
+            return False
 
         except Exception as e:
             logger.error("Failed to play audio: %s", e)
@@ -915,7 +922,10 @@ class OverlayWidget(QWidget):
         if duration_ms > 0:
             # User specified explicit duration — use max of that and TTS estimate
             tts_duration = max(tts_duration, duration_ms)
-        self._speech_timer.start(tts_duration)
+        # Safety-net timer: clear bubble if TTS/pygame never fires its own
+        # clear (e.g. if audio playback fails silently).
+        self._speech_timer.setInterval(tts_duration + 1000)
+        self._speech_timer.start()
         # Resize widget to accommodate bubble
         self._update_widget_size()
 

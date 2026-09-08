@@ -22,14 +22,19 @@ _use_pygame = False
 
 
 def _try_qt() -> bool:
-    """Check if QtMultimedia can actually play audio."""
+    """Check if QtMultimedia can actually play audio.
+
+    NOTE: QMediaPlayer creation may succeed outside QApplication but fail
+    at runtime. We test by actually trying to create and play back a short
+    silence — if the backend is missing, Qt prints 'Not available' and the
+    playback throws an error we can catch.
+    """
     if not _QT_AVAILABLE:
         return False
     try:
         from PyQt6.QtMultimedia import QMediaDevices
         if len(QMediaDevices.audioOutputs()) == 0:
             return False
-        # Try a real playback — catches missing codec plugins
         import tempfile as _tf
         test_player = QMediaPlayer()
         test_output = QAudioOutput()
@@ -107,17 +112,17 @@ class AudioPlayer:
 
     def __init__(self):
         global _use_pygame
-        # Determine engine once at first instantiation
+        # Determine engine once at first instantiation.
+        # NOTE: _try_qt() runs outside QApplication and gives false positives —
+        # QMediaPlayer imports fine but playback backend is missing at runtime.
+        # Default to pygame-ce which works reliably.
         if not _use_pygame:
-            if _try_qt():
-                self._player, self._output = get_player()
-                self._is_playing = False
-            else:
-                _use_pygame = True
-                _init_pygame()
-                self._player = None
-                self._output = None
-                self._is_playing = False
+            # Force pygame on this system; QtMultimedia backend is unavailable.
+            _use_pygame = True
+            _init_pygame()
+            self._player = None
+            self._output = None
+        self._is_playing = False
         self._use_pygame = _use_pygame
 
     def play_audio(self, audio_data: bytes) -> bool:
@@ -129,7 +134,9 @@ class AudioPlayer:
             return False
 
         # Write to temp file
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+        # Use .wav extension — pyttsx3 generates WAV bytes; .mp3 extension
+        # causes pygame to throw "Out of memory" due to codec mismatch.
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             f.write(audio_data)
             temp_path = f.name
 
@@ -164,11 +171,26 @@ class AudioPlayer:
                 return True
 
         except Exception as e:
-            # First MP3 failure → permanently switch to pygame
+            # Qt failure → switch to pygame and retry once (no recursion).
             if not _use_pygame:
-                logger.warning("QtMultimedia can't play MP3 (%s) — switching to pygame", e)
+                logger.warning("QtMultimedia failed (%s) — switching to pygame", e)
                 _switch_to_pygame()
-                return self.play_audio(audio_data)  # Retry with pygame
+                # Direct pygame play without re-entering this method
+                try:
+                    import pygame
+                    _init_pygame()
+                    pygame.mixer.music.load(temp_path)
+                    pygame.mixer.music.set_volume(0.8)
+                    pygame.mixer.music.play()
+                    self._is_playing = True
+                    duration_sec = max(len(audio_data) / 44100 * 4, 2.0)
+                    threading.Timer(duration_sec + 0.5, cleanup).start()
+                    return True
+                except Exception as e2:
+                    logger.error("pygame also failed: %s", e2)
+                    cleanup()
+                    self._is_playing = False
+                    return False
             logger.error("Failed to play audio: %s", e)
             self._is_playing = False
             cleanup()

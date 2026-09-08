@@ -224,10 +224,15 @@ class FishAudioTTS:
             return self._fallback_generate_audio(text, cache_file)
 
     def _fallback_generate_audio(self, text: str, cache_file: Path) -> Optional[bytes]:
-        """Fallback TTS using local pyttsx3 engine."""
+        """Fallback TTS using local pyttsx3 engine.
+
+        NOTE: pyttsx3 generates WAV but saves with whatever extension given.
+        Save as .wav — pygame-ce handles WAV natively; saving as .mp3 causes
+        "Out of memory" because codec mismatch (WAV bytes with .mp3 extension).
+        """
         try:
             import pyttsx3
-            temp_path = str(self._cache_dir / f"_pyttsx_{hash(text) & 0xFFFFFFFF:08x}.mp3")
+            temp_path = str(self._cache_dir / f"_pyttsx_{hash(text) & 0xFFFFFFFF:08x}.wav")
 
             engine = pyttsx3.init()
             # Try to select a good voice
