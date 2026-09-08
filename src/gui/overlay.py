@@ -181,7 +181,7 @@ class GreatSageAvatar(QWidget):
         glowPainter.setRenderHint(QPainter.RenderHint.Antialiasing)
         glowPainter.setBrush(glow)
         glowPainter.setPen(Qt.PenStyle.NoPen)
-        glowPainter.drawEllipse(cx - 30, cy - 30, 60, 60)
+        glowPainter.drawEllipse(int(cx - 30), int(cy - 30), 60, 60)
         glowPainter.end()
 
         # ── Floating robe / body ─────────────────────────────────────────
@@ -193,10 +193,10 @@ class GreatSageAvatar(QWidget):
         body_top = cy - 22
         body_bot = cy + 28
         p.setBrush(robe_color)
-        p.drawEllipse(cx - 18, body_top, 36, 30)
+        p.drawEllipse(int(cx - 18), int(body_top), 36, 30)
         # Robe bottom (wider)
         p.setBrush(robe_light)
-        p.drawEllipse(cx - 22, body_top + 18, 44, 22)
+        p.drawEllipse(int(cx - 22), int(body_top + 18), 44, 22)
 
         # Robe fold lines
         p.setPen(QPen(QColor(50, 90, 140), 1))
@@ -213,25 +213,25 @@ class GreatSageAvatar(QWidget):
             for ex in (cx - eye_spacing, cx + eye_spacing):
                 p.setBrush(pupil_color)
                 p.setPen(Qt.PenStyle.NoPen)
-                p.drawEllipse(ex - 4, eye_y - 4, 8, 8)
+                p.drawEllipse(int(ex - 4), int(eye_y - 4), 8, 8)
                 p.setBrush(QColor(10, 20, 40))
-                p.drawEllipse(ex - 2, eye_y - 2, 4, 4)
+                p.drawEllipse(int(ex - 2), int(eye_y - 2), 4, 4)
         elif st == NPCState.LISTENING:
             # Half-closed, calm
             for ex in (cx - eye_spacing, cx + eye_spacing):
                 p.setBrush(pupil_color)
                 p.setPen(Qt.PenStyle.NoPen)
-                p.drawEllipse(ex - 3, eye_y - 1, 6, 4)
+                p.drawEllipse(int(ex - 3), int(eye_y - 1), 6, 4)
                 p.setBrush(QColor(10, 20, 40))
-                p.drawEllipse(ex - 1, eye_y, 3, 2)
+                p.drawEllipse(int(ex - 1), int(eye_y), 3, 2)
         elif st == NPCState.SPEAKING:
             # Open, expressive
             for ex in (cx - eye_spacing, cx + eye_spacing):
                 p.setBrush(pupil_color)
                 p.setPen(Qt.PenStyle.NoPen)
-                p.drawEllipse(ex - 4, eye_y - 4, 8, 8)
+                p.drawEllipse(int(ex - 4), int(eye_y - 4), 8, 8)
                 p.setBrush(QColor(10, 20, 40))
-                p.drawEllipse(ex - 2, eye_y - 2, 4, 5)
+                p.drawEllipse(int(ex - 2), int(eye_y - 2), 4, 5)
         else:  # IDLE
             if self._is_blinking:
                 p.setPen(QPen(QColor(180, 210, 240), 2, Qt.PenStyle.SolidLine))
@@ -241,16 +241,16 @@ class GreatSageAvatar(QWidget):
                 for ex in (cx - eye_spacing, cx + eye_spacing):
                     p.setBrush(pupil_color)
                     p.setPen(Qt.PenStyle.NoPen)
-                    p.drawEllipse(ex - 3, eye_y - 3, 6, 6)
+                    p.drawEllipse(int(ex - 3), int(eye_y - 3), 6, 6)
                     p.setBrush(QColor(10, 20, 40))
-                    p.drawEllipse(ex - 1, eye_y - 1, 3, 3)
+                    p.drawEllipse(int(ex - 1), int(eye_y - 1), 3, 3)
 
         # ── Mouth ────────────────────────────────────────────────────────
         mouth_y = cy + 4
         if st == NPCState.SPEAKING:
             p.setBrush(QColor(40, 80, 120))
             p.setPen(Qt.PenStyle.NoPen)
-            p.drawEllipse(cx - 4, mouth_y, 8, 5)
+            p.drawEllipse(int(cx - 4), int(mouth_y), 8, 5)
         elif st == NPCState.PROCESSING:
             p.setPen(QPen(QColor(180, 210, 240), 2, Qt.PenStyle.SolidLine))
             p.drawLine(cx - 4, mouth_y, cx + 4, mouth_y)
@@ -265,14 +265,14 @@ class GreatSageAvatar(QWidget):
         core_color.setAlpha(core_alpha)
         p.setBrush(core_color)
         p.setPen(QPen(QColor(200, 230, 255), 1))
-        p.drawEllipse(cx - 5, core_y - 5, 10, 10)
+        p.drawEllipse(int(cx - 5), int(core_y - 5), 10, 10)
 
         # Core glow ring
         ring_color = QColor.fromHsl(int(self._core_hue), 90, 70)
         ring_color.setAlphaF(0.3 + 0.2 * math.sin(self._processing_spin))
         p.setPen(QPen(ring_color, 1.5))
         ring_r = 8 + 2 * math.sin(self._processing_spin * 2)
-        p.drawEllipse(cx - int(ring_r), core_y - int(ring_r), int(ring_r * 2), int(ring_r * 2))
+        p.drawEllipse(int(cx - ring_r), int(core_y - ring_r), int(ring_r * 2), int(ring_r * 2))
 
         # ── Processing particles ─────────────────────────────────────────
         if st in (NPCState.PROCESSING, NPCState.LISTENING):
@@ -300,7 +300,7 @@ class GreatSageAvatar(QWidget):
         dot_color.setAlpha(180)
         p.setBrush(dot_color)
         p.setPen(Qt.PenStyle.NoPen)
-        p.drawEllipse(cx - 3, indicator_y, 6, 6)
+        p.drawEllipse(int(cx - 3), int(indicator_y), 6, 6)
 
         p.end()
 
