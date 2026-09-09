@@ -32,8 +32,8 @@
   },
   "local_llm": {
     "api_base_url": "http://localhost:11434",
-    "default_model": "qwen2.5:7b",
-    "fallback_models": ["llama3.2", "codellama"],
+    "default_model": "gpt-oss",
+    "fallback_models": ["qwen2.5:7b", "llama3.2:1b"],
     "timeout_seconds": 60,
     "max_tokens": 4096
   },

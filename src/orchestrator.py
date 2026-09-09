@@ -319,9 +319,11 @@ class OfflineEngine:
         for msg in conversation_history[-10:]:
             messages.append(msg)
 
-        # Add screenshot if available (Ollama supports vision via base64)
+        # Add screenshot only for models that support vision (e.g. gemma4)
+        # qwen2.5:7b and llama3.2 do NOT support multimodal via Ollama
         user_content: list[dict] | str = prompt
-        if screenshot_b64:
+        vision_models = ("gemma4", "llava", "llama3.2-vision")
+        if screenshot_b64 and any(m in self._model.lower() for m in vision_models):
             user_content = [
                 {"type": "text", "text": prompt},
                 {
@@ -360,7 +362,8 @@ class OfflineEngine:
                 )
 
                 choice = response.choices[0]
-                response_text = choice.message.content or ""
+                _raw = choice.message.content or ""
+                response_text = "".join(c for c in _raw if ord(c) < 128)  # strip non-ASCII
 
                 # Extract tool calls
                 raw_tool_calls = getattr(choice.message, "tool_calls", None) or []
@@ -492,6 +495,7 @@ class Orchestrator:
         self._on_response = on_response
         self._on_hitl_request = on_hitl_request
         self._hitl_response_callbacks: dict[str, Callable] = {}
+        self._force_offline = False
 
     async def start(self) -> None:
         await self._net.start()
@@ -540,8 +544,9 @@ class Orchestrator:
             logger.warning("Initial screenshot failed: %s", exc)
 
         # 2. Select engine
-        engine = self._online_engine if self._net.is_online else self._offline_engine
-        engine_name = "ONLINE (OmniRoute)" if self._net.is_online else "OFFLINE (Ollama)"
+        use_offline = self._force_offline or not self._net.is_online
+        engine = self._offline_engine if use_offline else self._online_engine
+        engine_name = "OFFLINE (Ollama)" if use_offline else "ONLINE (OmniRoute)"
         logger.info("Using engine: %s", engine_name)
 
         system_prompt = self._build_system_prompt()
@@ -675,6 +680,15 @@ class Orchestrator:
 
     def clear_history(self) -> None:
         self._history.clear()
+
+    def set_force_offline(self, force: bool) -> None:
+        """Manually force offline mode regardless of network status."""
+        self._force_offline = force
+        logger.info("Force offline mode: %s", force)
+
+    @property
+    def force_offline(self) -> bool:
+        return self._force_offline
 
 
 # ── CLI entry point (testing only) ───────────────────────────────────────────
