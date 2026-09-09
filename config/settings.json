@@ -45,7 +45,12 @@
     ],
     "auto_approve_safe_actions": [
       "take_screenshot",
-      "get_system_stats"
+      "get_system_stats",
+      "volume_control",
+      "screen_ocr",
+      "google_search",
+      "app_launcher",
+      "launch_app"
     ],
     "screenshot_on_confirmation": true
   },
