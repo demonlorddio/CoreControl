@@ -64,10 +64,14 @@
     "min_silence_duration_ms": 1000,
     "transcription_model": "base.en"
   },
-  "fish_audio": {
-    "api_key": "sk-fish-TPSF6hf8o6xUTJ2YilyIgL0ntfMikkQxQ50FyhTVtQQ",
-    "model_id": "4c82a14548dc4b3e8d7dda68c9756c90",
-    "language": "en"
+  "tts": {
+    "engine": "edge",
+    "voice": "en-US-AriaNeural",
+    "language": "en",
+    "pitch": "-4Hz",
+    "rate": "-10%",
+    "fingerprint": true,
+    "reverb": 0.35
   },
   "logging": {
     "level": "INFO",

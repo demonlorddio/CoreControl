@@ -215,6 +215,13 @@ def _run_overlay_thread(
             ))
         overlay.hitl_requested.connect(_on_hitl_request)
 
+        # Offline mode toggle — passes through to orchestrator
+        def _on_force_offline_toggled(enabled: bool) -> None:
+            orch = orch_handle[0]
+            if orch is not None:
+                orch.set_force_offline(enabled)
+        overlay.force_offline_toggled.connect(_on_force_offline_toggled)
+
         # Hotkey trigger
         hotkey = HotkeyTrigger(on_trigger=_handle_hotkey)
         hotkey.start()

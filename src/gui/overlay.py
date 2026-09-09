@@ -577,6 +577,7 @@ class OverlayWidget(QWidget):
     hitl_response_received = pyqtSignal(str, object)  # (request_id, result_dict)
     response_received = pyqtSignal(str)  # Emitted when orchestrator returns a response
     app_closing = pyqtSignal()  # Emitted on close
+    force_offline_toggled = pyqtSignal(bool)  # Emitted when offline mode is toggled
 
     def __init__(
         self,
@@ -597,10 +598,12 @@ class OverlayWidget(QWidget):
         self._current_state = NPCState.IDLE
         self._speech_text = ""
         self._speech_timer: Optional[QTimer] = None
+        self._last_speech_duration_ms = 0
         self._drag_start: Optional[QPoint] = None
         self._hitl_modal: Optional[HITLModal] = None
         self._hitl_waiting: dict[str, tuple[HITLRequest, Callable]] = {}
         self._show_on_top = True
+        self._large_screen = False
 
         # ── Avatar ──────────────────────────────────────────────────────
         self._avatar = GreatSageAvatar(self)
@@ -635,7 +638,7 @@ class OverlayWidget(QWidget):
 
         # ── Size ────────────────────────────────────────────────────────
         self._large_screen = False
-        self._fish_tts = None
+        self._local_tts = None
         self._tts_language = "en"  # "en" or "ja"
         # ── Audio ───────────────────────────────────────────────────────
         self._audio_player: Optional[QMediaPlayer] = None
@@ -667,6 +670,10 @@ class OverlayWidget(QWidget):
         act_top.triggered.connect(self._toggle_show_on_top)
         self._large_screen_act = self._tray_menu.addAction("Large Screen  (off)")
         self._large_screen_act.triggered.connect(self._toggle_large_screen)
+        self._force_offline_act = self._tray_menu.addAction("Force Offline Mode  (off)")
+        self._force_offline_act.setCheckable(True)
+        self._force_offline_act.setChecked(False)
+        self._force_offline_act.triggered.connect(self._toggle_force_offline)
         act_quit = self._tray_menu.addAction("Quit")
         act_quit.triggered.connect(self._do_quit)
 
@@ -706,104 +713,89 @@ class OverlayWidget(QWidget):
         elif state == NPCState.IDLE:
             self._bubble.clear()
 
-    def _init_fish_tts(self) -> bool:
-        """Initialize Fish Audio TTS engine with Great Sage voice model."""
-        if self._fish_tts is not None:
+    def _init_local_tts(self) -> bool:
+        """Initialize Local TTS engine (Edge-TTS primary, pyttsx3 fallback)."""
+        if self._local_tts is not None:
             return True
         try:
-            from ..tts.fish_audio import FishAudioTTS
+            from ..tts.local_tts import LocalTTS
 
-            # Load settings
-            import json
-            from pathlib import Path
-            settings_path = Path(__file__).resolve().parent.parent.parent / "config" / "settings.json"
-            with open(settings_path) as f:
-                settings = json.load(f)
-            fish_config = settings.get("fish_audio", {})
-            api_key = fish_config.get("api_key", "")
-
-            if not api_key:
-                logger.warning("Fish Audio API key not configured in settings.json")
-                return False
-
-            self._fish_tts = FishAudioTTS(api_key=api_key)
-            model_id = fish_config.get("model_id", "")
-            if model_id:
-                self._fish_tts._voice_model = model_id
-            lang = fish_config.get("language", "en")
-            self._fish_tts.language = lang
-            self._tts_language = lang
-            # Pre-initialize session so it's ready for TTS calls
-            if self._fish_tts._ensure_session():
-                logger.info("Fish Audio TTS initialized with Great Sage voice (lang=%s)", lang)
-                return True
-            else:
-                logger.error("Fish Audio session initialization failed")
-                self._fish_tts = None
-                return False
+            self._local_tts = LocalTTS(language=self._tts_language)
+            logger.info("LocalTTS initialized (voice=%s, lang=%s)",
+                         self._local_tts._voice, self._tts_language)
+            return True
         except ImportError as e:
-            logger.warning("Fish Audio SDK not installed — TTS disabled: %s", e)
+            logger.warning("edge-tts not installed — TTS disabled: %s", e)
             return False
         except Exception as exc:
-            logger.warning("Fish Audio TTS initialization failed: %s", exc)
+            logger.warning("LocalTTS initialization failed: %s", exc)
             return False
 
-    def _speak_fish(self, text: str) -> int:
+    def _speak_local(self, text: str) -> int:
         """
-        Speak text via Fish Audio TTS.
-        Returns estimated display duration in ms (for bubble timing safety-net).
-        The bubble is cleared when audio actually finishes, not on this estimate.
+        Speak text via LocalTTS (Edge-TTS + Great Sage DSP).
+        Returns estimated duration in ms (actual is tracked via _last_speech_duration_ms).
+        Background thread shows text and plays audio after generation completes.
         """
-        if self._fish_tts is None and not self._init_fish_tts():
+        if self._local_tts is None and not self._init_local_tts():
             return self._estimated_duration_ms(text)
 
-        if self._fish_tts is None:
+        if self._local_tts is None:
             return self._estimated_duration_ms(text)
 
-        # Estimate duration based on text length (used as safety-net timer)
-        duration_ms = self._estimated_duration_ms(text)
-
-        # Play audio asynchronously; clear bubble only after audio ends
         def _play_audio():
             try:
-                import tempfile
-                import os
-                from PyQt6.QtCore import QUrl, QTimer
-
-                # Translate if Japanese
-                if self._tts_language == "ja":
+                if self._local_tts._language == "ja":
                     text_to_speak = self._translate_to_japanese(text)
                 else:
                     text_to_speak = text
 
-                # Ensure session is initialized before TTS call
-                if not self._fish_tts._ensure_session():
-                    logger.error("Fish Audio session not available")
-                    return
-
-                # Generate audio (uses edge-tts for Japanese, pyttsx3 for English fallback)
-                audio_data = self._fish_tts._generate_or_get_audio(
-                    text_to_speak,
-                    self._fish_tts._cache_dir / f"{hash(text_to_speak) & 0xFFFFFFFF:08x}.mp3"
-                )
+                from pathlib import Path
+                cache_file = self._local_tts._cache_dir / \
+                    self._cache_key_for(text_to_speak, self._local_tts._language,
+                                        self._local_tts._voice)
+                audio_data = self._local_tts._generate_or_get_audio(text_to_speak, cache_file)
 
                 if audio_data:
-                    # Play audio with fallback from QtMultimedia to pygame
-                    played = self._play_audio_with_fallback(audio_data)
+                    played, duration_ms = self._play_audio_with_fallback(audio_data)
                     if played:
-                        # Schedule bubble clear AFTER audio actually finishes
-                        QTimer.singleShot(duration_ms + 500, self._clear_speech)
+                        # Store actual duration for safety-net
+                        self._last_speech_duration_ms = duration_ms
+                        # Disable safety-net since we have real duration
+                        QTimer.singleShot(0, self._speech_timer.stop)
+                        # Show text right before playback starts (via main thread)
+                        QTimer.singleShot(0, lambda: self._show_speech_text(text_to_speak, duration_ms))
+                        logger.debug("Audio duration: %d ms for: %s", duration_ms, text[:40])
+                    else:
+                        self._last_speech_duration_ms = self._estimated_duration_ms(text)
+                        QTimer.singleShot(0, lambda: self._show_speech_text(text_to_speak, self._last_speech_duration_ms))
 
             except Exception as e:
-                logger.error("Fish Audio playback failed: %s", e)
+                logger.error("LocalTTS playback failed: %s", e)
+                self._last_speech_duration_ms = self._estimated_duration_ms(text)
+                QTimer.singleShot(0, self._show_speech_text, text)
 
         threading.Thread(target=_play_audio, daemon=True).start()
-        return duration_ms
+        return self._estimated_duration_ms(text)
 
-    def _play_audio_with_fallback(self, audio_data: bytes) -> bool:
-        """Play audio with automatic fallback from QtMultimedia to pygame to system player."""
+    def _show_speech_text(self, text: str, duration_ms: int = 0) -> None:
+        """Display speech text and start playback timer. Called from main thread."""
+        self._bubble.speak(text)
+        self._update_widget_size()
+        self._reposition_bubble()
+        # Start safety-net timer with actual duration if available
+        if duration_ms > 0:
+            self._speech_timer.setInterval(duration_ms + 500)
+            self._speech_timer.start()
+
+    def _play_audio_with_fallback(self, audio_data: bytes) -> tuple[bool, int]:
+        """Play audio with automatic fallback from QtMultimedia to pygame to system player.
+        Returns (success: bool, duration_ms: int)."""
         import os
         import tempfile
+        # Estimate duration from WAV header (2 bytes/sample, 2 channels, 24000 Hz)
+        estimated_duration_ms = int(len(audio_data) * 1000 / (2 * 2 * 24000))
+        estimated_duration_ms = max(estimated_duration_ms, 3000)
         try:
             # Detect format from magic bytes so the temp file gets the right extension
             is_mp3 = (
@@ -821,15 +813,17 @@ class OverlayWidget(QWidget):
                 except Exception:
                     pass
 
-            def _system_play():
+            def _system_play() -> tuple[bool, int]:
                 """Fall back to OS default player for formats pygame can't handle."""
                 import subprocess
                 if os.name == "nt":
                     os.startfile(temp_path)
                 else:
                     subprocess.run(["open", temp_path], check=False)
-                duration_sec = max(len(audio_data) / 4096, 2.0)
-                threading.Timer(duration_sec + 0.5, cleanup).start()
+                # Cleanup temp file after estimated duration
+                dur = max(len(audio_data) / 4096, 2.0) * 1000
+                threading.Timer(dur + 500, cleanup).start()
+                return (True, int(dur))
 
             # Iterative fallback: try Qt first if enabled, then pygame, then system player.
             # Max 3 attempts — prevents infinite recursion if all fail.
@@ -845,12 +839,9 @@ class OverlayWidget(QWidget):
                         self._audio_player.setSource(QUrl.fromLocalFile(temp_path))
                         self._audio_output.setVolume(0.8)
                         self._audio_player.play()
-                        self._audio_player.mediaStatusChanged.connect(
-                            lambda status, c=cleanup: c()
-                            if status == QMediaPlayer.MediaStatus.EndOfMedia
-                            else None
-                        )
-                        return True
+                        # Use estimated duration (Qt can report actual via positionChanged)
+                        threading.Timer(estimated_duration_ms / 1000 + 0.5, cleanup).start()
+                        return (True, estimated_duration_ms)
                     elif attempt == "pygame":
                         # pygame-ce fallback
                         import pygame
@@ -859,14 +850,16 @@ class OverlayWidget(QWidget):
                         pygame.mixer.music.load(temp_path)
                         pygame.mixer.music.set_volume(0.8)
                         pygame.mixer.music.play()
-                        import threading
-                        duration_sec = max(len(audio_data) / 44100 * 4, 2.0)
+                        # Estimate duration from audio data (pygame-ce 2.5.x lacks get_length)
+                        duration_sec = len(audio_data) / (2 * 2 * 24000)
+                        duration_ms = int(duration_sec * 1000)
+                        duration_ms = max(duration_ms, 3000)
+                        # Cleanup temp file after playback
                         threading.Timer(duration_sec + 0.5, cleanup).start()
-                        return True
+                        return (True, duration_ms)
                     else:
                         # System player — handles MP3 and any format the OS supports
-                        _system_play()
-                        return True
+                        return _system_play()
                 except Exception as e:
                     logger.warning("Audio playback failed via %s (%s)", attempt, e)
                     if self._audio_player:
@@ -879,11 +872,11 @@ class OverlayWidget(QWidget):
                         self._audio_output = None
             # All attempts failed
             cleanup()
-            return False
+            return (False, 0)
 
         except Exception as e:
             logger.error("Failed to play audio: %s", e)
-            return False
+            return (False, 0)
 
     def _translate_to_japanese(self, text: str) -> str:
         """Translate text to Japanese using free translation APIs."""
@@ -922,38 +915,55 @@ class OverlayWidget(QWidget):
 
     @staticmethod
     def _estimated_duration_ms(text: str) -> int:
-        """Estimate TTS duration from word count at ~160 wpm (Fish Audio is faster), min 3000ms."""
+        """Estimate TTS duration from word count at ~150 wpm (neural voices), min 3000ms."""
         word_count = len(text.split())
-        # Fish Audio speaks more naturally, ~160-180 wpm
-        duration_ms = max(int((word_count / 160.0) * 60.0 * 1000), 3000)
+        # Neural TTS at ~150 wpm (slightly slower for measured delivery)
+        duration_ms = max(int((word_count / 150.0) * 60.0 * 1000), 3000)
         return duration_ms
 
+    @staticmethod
+    def _cache_key_for(text: str, lang: str, voice: str) -> str:
+        """Generate a cache key filename for TTS audio."""
+        import hashlib
+        h = hashlib.md5(f"{lang}_{voice}_{text}".encode()).hexdigest()[:12]
+        return f"{h}.mp3"
+
     def speak(self, text: str, duration_ms: int = 0) -> None:
-        """Display text in the speech bubble and speak via Fish Audio TTS."""
+        """Display text in the speech bubble and speak via LocalTTS."""
         import logging
         logger = logging.getLogger("corecontrol.overlay")
         logger.info("speak() called with: %r", text[:80])
         self._speech_text = text
-        self._bubble.speak(text)
-        # Resize widget to accommodate bubble BEFORE repositioning
-        self._update_widget_size()
-        self._reposition_bubble()
-        self._speech_timer.stop()
-        # Use Fish Audio TTS-driven duration
-        tts_duration = self._speak_fish(text)
+        self._speech_timer.stop()  # Disable safety-net until we know duration
+
+        # Generate audio in background (text will appear after generation completes)
+        audio_duration_ms = self._speak_local(text)
+
         if duration_ms > 0:
-            # User specified explicit duration — use max of that and TTS estimate
-            tts_duration = max(tts_duration, duration_ms)
-        # Safety-net timer: clear bubble if TTS/pygame never fires its own
-        # clear (e.g. if audio playback fails silently).
-        self._speech_timer.setInterval(tts_duration + 1000)
+            audio_duration_ms = max(audio_duration_ms, duration_ms)
+
+        # Start a monitoring timer that will enable the safety-net after TTS completes
+        # The background thread will set _last_speech_duration_ms and enable the safety-net
+        QTimer.singleShot(audio_duration_ms + 500, self._enable_speech_safety_net)
+        logger.debug("TTS started, bubble will show after generation (~%d ms)", audio_duration_ms)
+
+    def _enable_speech_safety_net(self) -> None:
+        """Enable safety-net timer if TTS hasn't completed yet."""
+        if not hasattr(self, '_speech_timer') or not self._speech_timer:
+            return
+        # Only enable if text hasn't already been cleared
+        if self._speech_timer.isActive():
+            return
+        # Enable with a generous fallback duration
+        fallback_ms = self._estimated_duration_ms(getattr(self, '_speech_text', ''))
+        self._speech_timer.setInterval(fallback_ms + 2000)
         self._speech_timer.start()
 
     def _set_tts_language(self, lang: str) -> None:
         """Set TTS language and update menu display."""
         self._tts_language = lang
-        if self._fish_tts:
-            self._fish_tts.language = lang
+        if self._local_tts:
+            self._local_tts.language = lang
         # Update menu status
         lang_name = "English" if lang == "en" else "日本語"
         self._lang_status.setText(f"Status: {lang_name}")
@@ -1000,6 +1010,13 @@ class OverlayWidget(QWidget):
         new_h = max(self.height(), 280 + bubble_h + 10)
         if new_w != self.width() or new_h != self.height():
             self.setFixedSize(new_w, new_h)
+
+    def _toggle_force_offline(self) -> None:
+        """Toggle forced offline mode — bypasses network check and always uses local model."""
+        enabled = self._force_offline_act.isChecked()
+        self._force_offline_act.setText(f"Force Offline Mode  ({'on' if enabled else 'off'})")
+        self.force_offline_toggled.emit(enabled)
+        logger.info("Force offline mode toggled: %s", enabled)
 
     def _toggle_large_screen(self) -> None:
         """Toggle between normal (220×280) and large screen (700×520) modes."""
@@ -1079,8 +1096,8 @@ class OverlayWidget(QWidget):
                 pygame.mixer.music.stop()
             except Exception:
                 pass
-        if self._fish_tts:
-            self._fish_tts.stop()
+        if self._local_tts:
+            self._local_tts.stop()
         self.app_closing.emit()
         QApplication.instance().quit()
 
@@ -1094,8 +1111,8 @@ class OverlayWidget(QWidget):
                 pygame.mixer.music.stop()
             except Exception:
                 pass
-        if self._fish_tts:
-            self._fish_tts.stop()
+        if self._local_tts:
+            self._local_tts.stop()
         super().closeEvent(event)
 
     # ── Paint ─────────────────────────────────────────────────────────────────
