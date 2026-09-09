@@ -255,6 +255,99 @@ class GreatSageAvatar(QWidget):
         self._drag_start = None
 
 
+# ── Subtitle Window ───────────────────────────────────────────────────────────
+
+class SubtitleWindow(QWidget):
+    """
+    Standalone subtitle window that displays speech text independently
+    from the main overlay bot. Closing it does not affect the bot.
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Subtitles")
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+
+        self._text = ""
+        self._font = QFont("Consolas", 13)
+        self._font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+
+        # Minimal size, will expand when text appears
+        self.setFixedSize(100, 30)
+
+        # Style to match the overlay aesthetic
+        self.setStyleSheet(
+            "SubtitleWindow { background: transparent; }"
+        )
+
+    def show_text(self, text: str) -> None:
+        """Display subtitle text."""
+        self._text = text
+        self._update_size()
+        self.show()
+        self.activateWindow()
+        self.raise_()
+        self.update()
+
+    def clear(self) -> None:
+        """Clear subtitle text and hide window."""
+        self._text = ""
+        self.hide()
+        self.setFixedSize(100, 30)
+        self.update()
+
+    def _update_size(self) -> None:
+        if not self._text:
+            self.setFixedSize(100, 30)
+            return
+        fm = QFontMetrics(self._font)
+        lines = self._text.split("\n")
+        max_width = max(fm.horizontalAdvance(line) for line in lines)
+        padding_x = 20
+        padding_y = 12
+        line_height = fm.height() + 4
+        total_h = len(lines) * line_height + padding_y * 2
+        self.setFixedSize(int(max_width) + padding_x * 2, int(total_h))
+
+    def set_font(self, font: QFont) -> None:
+        self._font = font
+        self.update()
+
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
+        if not self._text:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Dark semi-transparent background
+        bg = QColor(10, 15, 30, 210)
+        p.setBrush(bg)
+        border = QColor(80, 130, 255, 160)
+        p.setPen(QPen(border, 1.5))
+        p.drawRoundedRect(1, 1, self.width() - 2, self.height() - 2, 8, 8)
+
+        # Text
+        p.setFont(self._font)
+        p.setPen(QColor(190, 230, 255))
+        fm = QFontMetrics(self._font)
+        lines = self._text.split("\n")
+        padding = 20
+        line_height = fm.height() + 4
+        for i, line in enumerate(lines):
+            y = padding + i * line_height + fm.ascent()
+            p.drawText(padding, y, line)
+        p.end()
+
+    def sizeHint(self) -> QSize:  # type: ignore[name-defined]
+        return self.size()
+
+
 # ── Speech Bubble ─────────────────────────────────────────────────────────────
 
 class SpeechBubble(QWidget):
@@ -605,6 +698,10 @@ class OverlayWidget(QWidget):
         self._show_on_top = True
         self._large_screen = False
 
+        # ── Subtitle Window ─────────────────────────────────────────────
+        self._subtitles_enabled = True
+        self._subtitle_window: Optional[SubtitleWindow] = None
+
         # ── Avatar ──────────────────────────────────────────────────────
         self._avatar = GreatSageAvatar(self)
         self._avatar.setGeometry(10, 10, 200, 220)
@@ -668,6 +765,10 @@ class OverlayWidget(QWidget):
         act_hide.triggered.connect(self._do_hide)
         act_top = self._tray_menu.addAction("Show on Top" if self._show_on_top else "Always on Top")
         act_top.triggered.connect(self._toggle_show_on_top)
+        self._subtitles_act = self._tray_menu.addAction("Subtitles  (on)")
+        self._subtitles_act.setCheckable(True)
+        self._subtitles_act.setChecked(True)
+        self._subtitles_act.triggered.connect(self._toggle_subtitles)
         self._large_screen_act = self._tray_menu.addAction("Large Screen  (off)")
         self._large_screen_act.triggered.connect(self._toggle_large_screen)
         self._force_offline_act = self._tray_menu.addAction("Force Offline Mode  (off)")
@@ -783,6 +884,9 @@ class OverlayWidget(QWidget):
         self._bubble.speak(text)
         self._update_widget_size()
         self._reposition_bubble()
+        # Push text to subtitle window if enabled
+        if self._subtitles_enabled:
+            self._get_subtitle_window().show_text(text)
         # Start safety-net timer with actual duration if available
         if duration_ms > 0:
             self._speech_timer.setInterval(duration_ms + 500)
@@ -1044,7 +1148,31 @@ class OverlayWidget(QWidget):
 
     def _clear_speech(self) -> None:
         self._bubble.clear()
+        if self._subtitles_enabled and self._subtitle_window is not None:
+            self._subtitle_window.clear()
         self._update_widget_size()
+
+    def _get_subtitle_window(self) -> SubtitleWindow:
+        """Lazily create and return the subtitle window."""
+        if self._subtitle_window is None:
+            self._subtitle_window = SubtitleWindow()
+            self._subtitle_window.set_font(QFont("Consolas", 13))
+            # Position below and to the right of the overlay
+            geo = self.geometry()
+            sub_x = geo.right() + 16
+            sub_y = geo.bottom() + 16
+            self._subtitle_window.move(sub_x, sub_y)
+        return self._subtitle_window
+
+    def _toggle_subtitles(self) -> None:
+        """Toggle subtitle display on/off."""
+        self._subtitles_enabled = not self._subtitles_enabled
+        label = "on" if self._subtitles_enabled else "off"
+        self._subtitles_act.setText(f"Subtitles  ({label})")
+        if not self._subtitles_enabled:
+            if self._subtitle_window is not None:
+                self._subtitle_window.clear()
+        logger.info("Subtitles %s", label)
 
     def _on_hitl_finished(self, modal: HITLModal, request_id: str) -> None:
         result = modal.get_result()
