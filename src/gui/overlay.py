@@ -935,6 +935,8 @@ class OverlayWidget(QWidget):
         logger.info("speak() called with: %r", text[:80])
         self._speech_text = text
         self._bubble.speak(text)
+        # Resize widget to accommodate bubble BEFORE repositioning
+        self._update_widget_size()
         self._reposition_bubble()
         self._speech_timer.stop()
         # Use Fish Audio TTS-driven duration
@@ -946,8 +948,6 @@ class OverlayWidget(QWidget):
         # clear (e.g. if audio playback fails silently).
         self._speech_timer.setInterval(tts_duration + 1000)
         self._speech_timer.start()
-        # Resize widget to accommodate bubble
-        self._update_widget_size()
 
     def _set_tts_language(self, lang: str) -> None:
         """Set TTS language and update menu display."""

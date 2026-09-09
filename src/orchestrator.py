@@ -279,32 +279,28 @@ class OnlineEngine:
         return response_text, tool_calls
 
 
-# ── Offline engine (Ollama) ───────────────────────────────────────────────────
+# ── Offline engine (Ollama - OpenAI compatible) ───────────────────────────────
 
 class OfflineEngine:
-    """Uses a locally hosted Ollama model for fully offline operation."""
+    """Uses Ollama's OpenAI-compatible API for fully offline operation."""
 
     def __init__(self) -> None:
-        self._base_url = OLLAMA_BASE_URL
+        self._base_url = OLLAMA_BASE_URL.rstrip("/") + "/v1"
         self._model = OLLAMA_MODEL
         self._fallbacks = OLLAMA_FALLBACKS
+        self._max_tokens = _llm_cfg.get("max_tokens", 4096)
+        self._timeout = OLLAMA_TIMEOUT
 
-    async def _ocr_screenshot(self, screenshot_b64: str) -> str:
-        """Extract text from screenshot via pytesseract (offline OCR)."""
         try:
-            import io
-            import pytesseract
-            from PIL import Image
-
-            img_bytes = base64.b64decode(screenshot_b64)
-            img = Image.open(io.BytesIO(img_bytes))
-            text = pytesseract.image_to_string(img)
-            return f"[Screen OCR]\n{text[:2000]}" if text.strip() else "[Screen: no readable text]"
+            from openai import AsyncOpenAI
+            self._client = AsyncOpenAI(
+                api_key="ollama",  # Ollama doesn't require API key
+                base_url=self._base_url,
+            )
+            logger.info("Offline engine initialized: %s (model: %s)", self._base_url, self._model)
         except ImportError:
-            return "[Screen: OCR not available — install pytesseract]"
-        except Exception as exc:
-            logger.warning("OCR failed: %s", exc)
-            return "[Screen: OCR failed]"
+            logger.error("openai SDK not installed — run: pip install openai")
+            self._client = None
 
     async def process(
         self,
@@ -314,79 +310,81 @@ class OfflineEngine:
         conversation_history: list[dict],
         system_prompt: str,
     ) -> tuple[str, list[dict]]:
-        """Send prompt to Ollama with tool definitions."""
-        try:
-            import httpx
-        except ImportError:
-            raise RuntimeError("httpx not installed — run: pip install httpx")
+        """Send prompt to Ollama with tool definitions using OpenAI format."""
+        if not self._client:
+            raise RuntimeError("Offline API client not available — check settings.local_llm")
 
-        screen_context = ""
-        if screenshot_b64:
-            screen_context = await self._ocr_screenshot(screenshot_b64)
-
-        tools_json = json.dumps(
-            [{"name": t["name"], "description": t["description"]} for t in tool_definitions],
-            indent=2,
-        )
-
-        full_system = system_prompt + f"\n\nAvailable tools:\n{tools_json}\n\n" \
-            "To call a tool, respond with EXACTLY this JSON:\n" \
-            'TOOL_CALL: {"name": "<tool_name>", "input": {<args>}}\n\n' \
-            "After tool results, continue reasoning and call more tools if needed.\n" \
-            "Give a final plain-text response once done."
-
-        messages = []
+        # Build messages from history
+        messages = [{"role": "system", "content": system_prompt}]
         for msg in conversation_history[-10:]:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            if isinstance(content, list):
-                content = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
-            messages.append({"role": role, "content": content})
+            messages.append(msg)
 
-        user_msg = prompt
-        if screen_context:
-            user_msg = f"{screen_context}\n\nUser request: {prompt}"
-        messages.append({"role": "user", "content": user_msg})
+        # Add screenshot if available (Ollama supports vision via base64)
+        user_content: list[dict] | str = prompt
+        if screenshot_b64:
+            user_content = [
+                {"type": "text", "text": prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{screenshot_b64}"},
+                },
+            ]
+        messages.append({"role": "user", "content": user_content})
 
+        # Build tool definitions in OpenAI format
+        tools = []
+        if tool_definitions:
+            for t in tool_definitions:
+                tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": t["name"],
+                        "description": t["description"],
+                        "parameters": t["inputSchema"],
+                    },
+                })
+
+        # Try main model first, then fallbacks
         models_to_try = [self._model] + self._fallbacks
         response_text = None
+        tool_calls = []
+
         for model in models_to_try:
             try:
-                async with httpx.AsyncClient(timeout=OLLAMA_TIMEOUT) as client:
-                    resp = await client.post(
-                        f"{self._base_url}/api/chat",
-                        json={
-                            "model": model,
-                            "messages": [{"role": "system", "content": full_system}] + messages,
-                            "stream": False,
-                        },
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
-                    response_text = data["message"]["content"]
-                    logger.debug("Ollama response (%s): %r", model, response_text[:120])
-                    break
+                response = await self._client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    max_tokens=self._max_tokens,
+                    timeout=self._timeout,
+                    tools=tools if tools else None,
+                )
+
+                choice = response.choices[0]
+                response_text = choice.message.content or ""
+
+                # Extract tool calls
+                raw_tool_calls = getattr(choice.message, "tool_calls", None) or []
+                for tc in raw_tool_calls:
+                    try:
+                        args_str = tc.function.arguments if hasattr(tc.function, "arguments") else ""
+                        input_args = json.loads(args_str) if args_str else {}
+                    except (json.JSONDecodeError, AttributeError):
+                        input_args = {}
+                    tool_calls.append({
+                        "name": tc.function.name,
+                        "input": input_args,
+                    })
+
+                logger.debug("Ollama response (%s): %r", model, response_text[:120])
+                break
+
             except Exception as exc:
                 logger.warning("Ollama model %r failed: %s", model, exc)
 
         if response_text is None:
             return "❌ All local LLM models unavailable. Check Ollama is running.", []
 
-        # Parse TOOL_CALL lines
-        tool_calls: list[dict] = []
-        clean_lines = []
-        for line in response_text.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("TOOL_CALL:"):
-                try:
-                    payload = json.loads(stripped[len("TOOL_CALL:"):].strip())
-                    tool_calls.append({"name": payload["name"], "input": payload.get("input", {})})
-                except json.JSONDecodeError as exc:
-                    logger.warning("Could not parse TOOL_CALL: %s", exc)
-            else:
-                clean_lines.append(line)
-
-        return "\n".join(clean_lines).strip(), tool_calls
+        return response_text, tool_calls
 
 
 # ── HITL filter (local modal-based) ──────────────────────────────────────────
