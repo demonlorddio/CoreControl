@@ -10,13 +10,16 @@ from __future__ import annotations
 
 import base64
 import datetime
+import fnmatch
 import io
 import json
 import logging
 import os
 import platform
+import shutil
 import subprocess
 import sys
+import threading
 import time
 import webbrowser
 from pathlib import Path
@@ -127,6 +130,26 @@ async def handle_call_tool(context, params) -> CallToolResult:
             return _call_web_evaluate(arguments)
         elif name == "open_url":
             return _call_open_url(arguments)
+        elif name == "launch_app":
+            return _call_launch_app(arguments)
+        elif name == "clipboard_read":
+            return _call_clipboard_read(arguments)
+        elif name == "clipboard_write":
+            return _call_clipboard_write(arguments)
+        elif name == "set_timer":
+            return _call_set_timer(arguments)
+        elif name == "annotate_screenshot":
+            return _call_annotate_screenshot(arguments)
+        elif name == "rename_files":
+            return _call_rename_files(arguments)
+        elif name == "kill_process":
+            return _call_kill_process(arguments)
+        elif name == "disk_usage":
+            return _call_disk_usage(arguments)
+        elif name == "search_youtube":
+            return _call_search_youtube(arguments)
+        elif name == "github_op":
+            return _call_github_op(arguments)
         else:
             return CallToolResult(content=[TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))], isError=True)
     except Exception as exc:
@@ -422,6 +445,236 @@ TOOLS: list[Tool] = [
                 },
             },
             "required": ["url"],
+        },
+    ),
+    Tool(
+        name="launch_app",
+        description=(
+            "Launch an application or open a file by name or path. "
+            "Use this to open programs (e.g. 'notepad', 'chrome', 'code') "
+            "or files (e.g. 'C:\\Users\\Me\\doc.pdf'). "
+            "On Windows uses Start-Process; on Linux uses xdg-open."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "Application name, executable, or file path to launch.",
+                },
+                "args": {
+                    "type": "string",
+                    "description": "Optional command-line arguments.",
+                },
+            },
+            "required": ["target"],
+        },
+    ),
+    Tool(
+        name="clipboard_read",
+        description="Read the current text content from the system clipboard.",
+        inputSchema={"type": "object", "properties": {}, "required": []},
+    ),
+    Tool(
+        name="clipboard_write",
+        description=(
+            "Write text to the system clipboard. "
+            "Use this when Master wants to copy text to share it elsewhere."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "Text content to copy to clipboard.",
+                },
+            },
+            "required": ["text"],
+        },
+    ),
+    Tool(
+        name="set_timer",
+        description=(
+            "Set a countdown timer that triggers a desktop notification when it expires. "
+            "Use this when the user asks to 'set a timer for X minutes' or 'remind me in X minutes'."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "minutes": {
+                    "type": "integer",
+                    "description": "Duration in minutes (1-120).",
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Optional label shown in the notification (e.g. 'Timer', 'Break time').",
+                },
+            },
+            "required": ["minutes"],
+        },
+    ),
+    Tool(
+        name="annotate_screenshot",
+        description=(
+            "Take a screenshot and draw an annotation (arrow, circle, or rectangle) on it. "
+            "Returns the annotated image as base64. "
+            "Use this when Master wants to highlight something on screen."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "shape": {
+                    "type": "string",
+                    "enum": ["arrow", "circle", "rectangle", "text"],
+                    "description": "Type of annotation.",
+                },
+                "start_x": {"type": "integer", "description": "Start X pixel coordinate."},
+                "start_y": {"type": "integer", "description": "Start Y pixel coordinate."},
+                "end_x": {"type": "integer", "description": "End X pixel coordinate (for arrow/rect)."},
+                "end_y": {"type": "integer", "description": "End Y pixel coordinate (for arrow/rect)."},
+                "radius": {"type": "integer", "description": "Circle radius in pixels."},
+                "color": {
+                    "type": "string",
+                    "description": "RGB color as 'r,g,b' (default: 255,0,0 red).",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "Text label to draw (for shape='text').",
+                },
+                "thickness": {"type": "integer", "description": "Line thickness in pixels (default: 3).", "default": 3},
+            },
+            "required": ["shape", "start_x", "start_y"],
+        },
+    ),
+    Tool(
+        name="rename_files",
+        description=(
+            "Rename files in a directory by applying a pattern. "
+            "Supports prefix, suffix, replace (find/replace substring), and extension change. "
+            "Dry-run mode returns proposed names without renaming."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "directory": {
+                    "type": "string",
+                    "description": "Path to the directory containing files to rename.",
+                },
+                "pattern": {
+                    "type": "string",
+                    "enum": ["prefix", "suffix", "replace", "extension"],
+                    "description": "Rename operation type.",
+                },
+                "value": {
+                    "type": "string",
+                    "description": "Value to apply (prefix/suffix text, find/replace pair as 'old=new', or new extension).",
+                },
+                "glob": {
+                    "type": "string",
+                    "description": "Optional glob filter (e.g. '*.jpg'). Defaults to all files.",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "If true, show what would happen without renaming.",
+                    "default": True,
+                },
+            },
+            "required": ["directory", "pattern", "value"],
+        },
+    ),
+    Tool(
+        name="kill_process",
+        description=(
+            "Terminate a running process by name or PID. "
+            "Returns list of killed processes. Use with caution."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Process name to kill (case-insensitive match).",
+                },
+                "pid": {
+                    "type": "integer",
+                    "description": "Specific PID to kill (alternative to name).",
+                },
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="disk_usage",
+        description=(
+            "Return disk space usage per mounted drive/partition. "
+            "Shows total, used, free, and percentage for each."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
+    Tool(
+        name="search_youtube",
+        description=(
+            "Search YouTube for a query and return the top results. "
+            "Opens the search results page in the browser and also returns structured data."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query string.",
+                },
+                "open_browser": {
+                    "type": "boolean",
+                    "description": "Also open YouTube search results page in browser (default: True).",
+                    "default": True,
+                },
+            },
+            "required": ["query"],
+        },
+    ),
+    Tool(
+        name="github_op",
+        description=(
+            "Perform GitHub operations: list issues, list PRs, get repo info, "
+            "create a branch, or clone a repo. "
+            "Requires git and gh CLI to be installed and authenticated."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "op": {
+                    "type": "string",
+                    "enum": ["list_issues", "list_prs", "repo_info", "create_branch", "clone"],
+                    "description": "The operation to perform.",
+                },
+                "repo": {
+                    "type": "string",
+                    "description": "GitHub repo in 'owner/repo' format.",
+                },
+                "branch": {
+                    "type": "string",
+                    "description": "Branch name (for create_branch).",
+                },
+                "source_branch": {
+                    "type": "string",
+                    "description": "Source branch (for create_branch, default: main).",
+                },
+                "local_path": {
+                    "type": "string",
+                    "description": "Local directory for clone (for clone).",
+                },
+                "state": {
+                    "type": "string",
+                    "enum": ["open", "closed", "all"],
+                    "description": "Filter for issues/PRs (default: open).",
+                },
+            },
+            "required": ["op", "repo"],
         },
     ),
 ]
@@ -844,6 +1097,300 @@ def _call_get_location(args: dict) -> CallToolResult:
     except Exception as exc:
         logger.warning("Location fetch failed: %s", exc)
         return _error_result(f"Could not resolve location: {exc}")
+
+
+# ── New tool handlers ────────────────────────────────────────────────────────
+
+def _call_launch_app(args: dict) -> CallToolResult:
+    target = str(args.get("target", "")).strip()
+    extra_args = str(args.get("args", "")).strip()
+    full_cmd = f'{target} {"-- " + extra_args if extra_args else ""}'.strip()
+    try:
+        subprocess.Popen(full_cmd, shell=True)
+        return _tool_result({"success": True, "launched": target, "command": full_cmd})
+    except Exception as exc:
+        return _error_result(f"Could not launch {target}: {exc}")
+
+
+def _call_clipboard_read(_args: dict) -> CallToolResult:
+    try:
+        import pyperclip
+        text = pyperclip.paste()
+        return _tool_result({"success": True, "text": text, "length": len(text)})
+    except Exception as exc:
+        return _error_result(f"Clipboard read failed: {exc}")
+
+
+def _call_clipboard_write(args: dict) -> CallToolResult:
+    try:
+        import pyperclip
+        text = str(args.get("text", ""))
+        pyperclip.copy(text)
+        return _tool_result({"success": True, "length": len(text)})
+    except Exception as exc:
+        return _error_result(f"Clipboard write failed: {exc}")
+
+
+def _call_set_timer(args: dict) -> CallToolResult:
+    minutes = max(1, int(args.get("minutes", 1)))
+    label = str(args.get("label", "Timer"))
+    seconds = minutes * 60
+
+    def _ring():
+        time.sleep(seconds)
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBeep(0xFFFFFFFF)
+        except Exception:
+            pass
+        logger.info("Timer expired: %s (%d min)", label, minutes)
+
+    threading.Thread(target=_ring, daemon=True).start()
+    return _tool_result({
+        "success": True,
+        "message": f"Timer set for {minutes} minute{'s' if minutes != 1 else ''} — '{label}'",
+        "seconds": seconds,
+    })
+
+
+def _call_annotate_screenshot(args: dict) -> CallToolResult:
+    try:
+        import numpy as np
+        has_numpy = True
+    except ImportError:
+        has_numpy = False
+
+    try:
+        from PIL import ImageDraw, ImageFont
+
+        # Capture full primary monitor
+        with mss() as sct:
+            monitor = sct.monitors[1]  # primary
+            raw = sct.grab(monitor)
+            img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+            img = img.convert("RGBA")
+            draw = ImageDraw.Draw(img)
+
+        shape = str(args.get("shape", "arrow")).lower()
+        sx = int(args["start_x"])
+        sy = int(args["start_y"])
+        color_str = str(args.get("color", "255,0,0"))
+        color = tuple(int(c) for c in color_str.split(","))[:3] + (255,)
+        thickness = int(args.get("thickness", 3))
+
+        if shape == "arrow":
+            ex = int(args.get("end_x", sx + 100))
+            ey = int(args.get("end_y", sy + 100))
+            draw.line([(sx, sy), (ex, ey)], fill=color, width=thickness)
+            # Arrowhead
+            import math
+            angle = math.atan2(ey - sy, ex - sx)
+            head_len = 15 + thickness * 3
+            for offset in [angle + math.pi / 5, angle - math.pi / 5]:
+                dx = head_len * math.cos(offset)
+                dy = head_len * math.sin(offset)
+                draw.line([(ex, ey), (ex + dx, ey + dy)], fill=color, width=thickness)
+        elif shape == "circle":
+            r = int(args.get("radius", 60))
+            draw.ellipse([sx - r, sy - r, sx + r, sy + r], outline=color, width=thickness)
+        elif shape == "rectangle":
+            ex = int(args.get("end_x", sx + 100))
+            ey = int(args.get("end_y", sy + 100))
+            draw.rectangle([sx, sy, ex, ey], outline=color, width=thickness)
+        elif shape == "text":
+            txt = str(args.get("text", "annotation"))
+            try:
+                font = ImageFont.truetype("arial.ttf", 24)
+            except Exception:
+                font = ImageFont.load_default()
+            draw.text((sx, sy), txt, fill=color, font=font)
+        else:
+            return _error_result(f"Unknown shape: {shape!r}")
+
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return _tool_result({"success": True, "image_base64": b64, "format": "png"})
+    except Exception as exc:
+        logger.error("annotate_screenshot error: %s", exc)
+        return _error_result(f"Annotation failed: {exc}")
+
+
+def _call_rename_files(args: dict) -> CallToolResult:
+    try:
+        import fnmatch
+    except ImportError:
+        fnmatch = None
+
+    directory = str(args.get("directory", "")).strip()
+    pattern = str(args.get("pattern", "")).strip()
+    value = str(args.get("value", "")).strip()
+    glob_filter = str(args.get("glob", "*")).strip()
+    dry_run = bool(args.get("dry_run", True))
+
+    if not os.path.isdir(directory):
+        return _error_result(f"Directory not found: {directory}")
+
+    results = []
+    for fname in sorted(os.listdir(directory)):
+        if glob_filter != "*" and not fnmatch.filter([fname], glob_filter):
+            continue
+        base, ext = os.path.splitext(fname)
+        new_name = fname
+        try:
+            if pattern == "prefix":
+                new_name = value + fname
+            elif pattern == "suffix":
+                new_name = fname + value
+            elif pattern == "replace":
+                if "=" in value:
+                    old_s, new_s = value.split("=", 1)
+                    new_name = fname.replace(old_s, new_s)
+                else:
+                    new_name = fname
+            elif pattern == "extension":
+                new_name = base + value if value.startswith(".") else base + "." + value
+            else:
+                return _error_result(f"Unknown pattern: {pattern!r}")
+        except Exception as exc:
+            results.append({"file": fname, "error": str(exc)})
+            continue
+
+        if new_name == fname:
+            continue
+        old_path = os.path.join(directory, fname)
+        new_path = os.path.join(directory, new_name)
+        if dry_run:
+            results.append({"file": fname, "new_name": new_name, "action": "dry-run"})
+        else:
+            try:
+                os.rename(old_path, new_path)
+                results.append({"file": fname, "new_name": new_name, "action": "renamed"})
+            except Exception as exc:
+                results.append({"file": fname, "error": str(exc)})
+
+    return _tool_result({"success": True, "dry_run": dry_run, "changes": results})
+
+
+def _call_kill_process(args: dict) -> CallToolResult:
+    killed = []
+    try:
+        pid_arg = args.get("pid")
+        name_arg = str(args.get("name", "")).strip().lower()
+
+        if pid_arg is not None:
+            pid = int(pid_arg)
+            try:
+                p = psutil.Process(pid)
+                p.kill()
+                killed.append({"pid": pid, "name": p.name(), "status": "killed"})
+            except psutil.NoSuchProcess:
+                killed.append({"pid": pid, "status": "not found"})
+        elif name_arg:
+            for proc in psutil.process_iter(["pid", "name"]):
+                if name_arg in proc.info["name"].lower():
+                    try:
+                        proc.kill()
+                        killed.append({"pid": proc.info["pid"], "name": proc.info["name"], "status": "killed"})
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        killed.append({"pid": proc.info["pid"], "name": proc.info["name"], "status": "access denied"})
+        else:
+            return _error_result("Provide either 'pid' or 'name'")
+
+    except Exception as exc:
+        return _error_result(f"kill_process error: {exc}")
+
+    return _tool_result({"success": True, "killed": killed, "count": len(killed)})
+
+
+def _call_disk_usage(_args: dict) -> CallToolResult:
+    try:
+        usage = psutil.disk_usage("/")
+        partitions = []
+        for part in psutil.disk_partitions():
+            try:
+                u = psutil.disk_usage(part.mountpoint)
+                partitions.append({
+                    "device": part.device,
+                    "mountpoint": part.mountpoint,
+                    "fstype": part.fstype,
+                    "total_gb": round(u.total / 1_073_741_824, 2),
+                    "used_gb": round(u.used / 1_073_741_824, 2),
+                    "free_gb": round(u.free / 1_073_741_824, 2),
+                    "percent_used": u.percent,
+                })
+            except Exception:
+                pass
+        return _tool_result({"partitions": partitions, "root": {
+            "total_gb": round(usage.total / 1_073_741_824, 2),
+            "used_gb": round(usage.used / 1_073_741_824, 2),
+            "free_gb": round(usage.free / 1_073_741_824, 2),
+            "percent_used": usage.percent,
+        }})
+    except Exception as exc:
+        return _error_result(f"disk_usage error: {exc}")
+
+
+def _call_search_youtube(args: dict) -> CallToolResult:
+    query = str(args.get("query", "")).strip()
+    open_browser = bool(args.get("open_browser", True))
+    search_url = f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
+    if open_browser:
+        webbrowser.open(search_url, new=1, autoraise=True)
+    return _tool_result({
+        "success": True,
+        "query": query,
+        "search_url": search_url,
+        "browser_opened": open_browser,
+    })
+
+
+def _call_github_op(args: dict) -> CallToolResult:
+    op = str(args.get("op", "")).strip()
+    repo = str(args.get("repo", "")).strip()
+    _gh = shutil.which("gh") or shutil.which("git")
+    if not _gh:
+        return _error_result("GitHub CLI (gh) or git not found in PATH")
+
+    try:
+        if op == "list_issues":
+            state = str(args.get("state", "open"))
+            r = subprocess.run([_gh, "issue", "list", "--repo", repo, "--state", state, "--limit", "10"],
+                               capture_output=True, text=True, timeout=15)
+            return _tool_result({"success": True, "op": op, "output": r.stdout.strip() or r.stderr.strip()})
+
+        elif op == "list_prs":
+            state = str(args.get("state", "open"))
+            r = subprocess.run([_gh, "pr", "list", "--repo", repo, "--state", state, "--limit", "10"],
+                               capture_output=True, text=True, timeout=15)
+            return _tool_result({"success": True, "op": op, "output": r.stdout.strip() or r.stderr.strip()})
+
+        elif op == "repo_info":
+            r = subprocess.run([_gh, "repo", "view", repo], capture_output=True, text=True, timeout=15)
+            return _tool_result({"success": True, "op": op, "output": r.stdout.strip() or r.stderr.strip()})
+
+        elif op == "create_branch":
+            branch = str(args.get("branch", "")).strip()
+            source = str(args.get("source_branch", "main")).strip()
+            r = subprocess.run([_gh, "branch", "create", branch, "--source", source, "--repo", repo],
+                               capture_output=True, text=True, timeout=15)
+            return _tool_result({"success": r.returncode == 0, "op": op, "branch": branch,
+                                 "output": r.stdout.strip() or r.stderr.strip()})
+
+        elif op == "clone":
+            local_path = str(args.get("local_path", "."))
+            r = subprocess.run(["git", "clone", f"https://github.com/{repo}.git", local_path],
+                               capture_output=True, text=True, timeout=60)
+            return _tool_result({"success": r.returncode == 0, "op": op,
+                                 "output": r.stdout.strip() or r.stderr.strip()})
+
+        else:
+            return _error_result(f"Unknown github_op: {op!r}")
+
+    except subprocess.TimeoutExpired:
+        return _error_result(f"GitHub operation timed out: {op}")
+    except Exception as exc:
+        return _error_result(f"GitHub op error: {exc}")
 
 
 # ── Entry point ──────────────────────────────────────────────────────────────
