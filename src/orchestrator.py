@@ -80,6 +80,12 @@ When given a task:
 You have access to the following tools. Use them judiciously:
 {tool_descriptions}
 
+CRITICAL RULES:
+- When asked about the current time or date, you MUST call get_current_time. Never guess or use training data timestamps.
+- When asked about location, weather context, or timezone, you MUST call get_location. Never invent a city or region.
+- Report exact values from tool results — do not paraphrase or approximate timestamp data.
+- If a tool call fails, report the error to Master rather than fabricating data.
+
 When you need to call a tool, use the tool calling format provided by the API.
 After all tools are executed, provide a final response to Master summarising what was done.
 """

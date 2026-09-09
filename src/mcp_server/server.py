@@ -9,6 +9,7 @@ transport — any non-JSON bytes written there corrupt the protocol.
 from __future__ import annotations
 
 import base64
+import datetime
 import io
 import json
 import logging
@@ -100,6 +101,10 @@ async def handle_call_tool(context, params) -> CallToolResult:
             return _call_type_text(arguments)
         elif name == "get_system_stats":
             return _call_get_system_stats(arguments)
+        elif name == "get_current_time":
+            return _call_get_current_time(arguments)
+        elif name == "get_location":
+            return _call_get_location(arguments)
         elif name == "execute_terminal_command":
             return _call_execute_terminal_command(arguments)
         elif name == "web_navigate":
@@ -206,6 +211,31 @@ TOOLS: list[Tool] = [
                     "default": True,
                 }
             },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="get_current_time",
+        description=(
+            "Return the current local date, time, and timezone of this machine. "
+            "Use this whenever the user asks about the current time or date."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
+    Tool(
+        name="get_location",
+        description=(
+            "Return the geographic location of this machine based on its public IP address. "
+            "Includes city, region, country, timezone, and coordinates. "
+            "Use this whenever the user asks about location, weather context, or timezone."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {},
             "required": [],
         },
     ),
@@ -732,6 +762,41 @@ def _call_web_evaluate(args: dict) -> CallToolResult:
     except Exception as exc:
         logger.error("web_evaluate error: %s", exc)
         return _error_result(f"Evaluate failed: {exc}")
+
+
+def _call_get_current_time(args: dict) -> CallToolResult:
+    """Return the current local date, time, and timezone."""
+    now = datetime.datetime.now().astimezone()
+    return _tool_result({
+        "iso": now.isoformat(),
+        "formatted": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "timezone": str(now.tzinfo),
+        "utc_offset": now.strftime("%z"),
+    })
+
+
+def _call_get_location(args: dict) -> CallToolResult:
+    """Return geographic location via public IP geolocation."""
+    try:
+        import requests
+        r = requests.get("https://ipinfo.io/json", timeout=8)
+        data = r.json()
+        loc = data.get("loc", "unknown")
+        lat, lon = loc.split(",") if "," in loc else ("unknown", "unknown")
+        return _tool_result({
+            "ip": data.get("ip", "unknown"),
+            "city": data.get("city", "unknown"),
+            "region": data.get("region", "unknown"),
+            "country": data.get("country", "unknown"),
+            "country_name": data.get("country", "unknown"),
+            "postal": data.get("postal", "unknown"),
+            "timezone": data.get("timezone", "unknown"),
+            "latitude": lat,
+            "longitude": lon,
+        })
+    except Exception as exc:
+        logger.warning("Location fetch failed: %s", exc)
+        return _error_result(f"Could not resolve location: {exc}")
 
 
 # ── Entry point ──────────────────────────────────────────────────────────────
