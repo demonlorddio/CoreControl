@@ -150,6 +150,14 @@ async def handle_call_tool(context, params) -> CallToolResult:
             return _call_search_youtube(arguments)
         elif name == "github_op":
             return _call_github_op(arguments)
+        elif name == "volume_control":
+            return _call_volume_control(arguments)
+        elif name == "screen_ocr":
+            return _call_screen_ocr(arguments)
+        elif name == "google_search":
+            return _call_google_search(arguments)
+        elif name == "app_launcher":
+            return _call_app_launcher(arguments)
         else:
             return CallToolResult(content=[TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))], isError=True)
     except Exception as exc:
@@ -675,6 +683,121 @@ TOOLS: list[Tool] = [
                 },
             },
             "required": ["op", "repo"],
+        },
+    ),
+    Tool(
+        name="volume_control",
+        description=(
+            "Get or change the system master volume on Windows. "
+            "Supports get, set (0–100), mute/unmute, and step (+/−). "
+            "Requires Windows."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["get", "set", "mute", "unmute", "up", "down"],
+                    "description": "Action to perform.",
+                },
+                "level": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "description": "Volume level 0–100 (used with action='set').",
+                },
+                "step": {
+                    "type": "integer",
+                    "description": "Volume step percent (default: 5, used with up/down).",
+                    "default": 5,
+                },
+            },
+            "required": ["action"],
+        },
+    ),
+    Tool(
+        name="screen_ocr",
+        description=(
+            "Capture the screen (or a region) and run OCR to extract all readable text. "
+            "Use when Master needs to read text from anywhere on screen — "
+            "images, game UI, PDF previews, etc. Returns the extracted text."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "region": {
+                    "type": "string",
+                    "description": "Screen region: 'full' (default), 'top', 'bottom', 'left', 'right', "
+                                  "or 'center'. For exact pixels use 'x,y,w,h' (e.g. '0,0,500,400').",
+                    "default": "full",
+                },
+                "language": {
+                    "type": "string",
+                    "description": "Tesseract language code (default: eng). Add '+' for multi-language e.g. 'eng+hin'.",
+                    "default": "eng",
+                },
+                "max_length": {
+                    "type": "integer",
+                    "description": "Max characters to return (default: 4000).",
+                    "default": 4000,
+                },
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="google_search",
+        description=(
+            "Perform a Google search: open results in the browser and return the search URL "
+            "plus a brief content preview fetched directly. Use when Master asks to 'search Google for X' "
+            "or 'look up Y'."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The search query.",
+                },
+                "open_browser": {
+                    "type": "boolean",
+                    "description": "Also open Google search results page (default: True).",
+                    "default": True,
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Number of result snippets to return (default: 5).",
+                    "default": 5,
+                },
+            },
+            "required": ["query"],
+        },
+    ),
+    Tool(
+        name="app_launcher",
+        description=(
+            "Launch an application or open a file by name, executable, or full path. "
+            "Broader than launch_app — also supports common shortcut names "
+            "like 'settings', 'calculator', 'cmd', 'powershell', 'notepad++'. "
+            "On Windows uses Start-Process; on Linux uses xdg-open."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Application name or executable (e.g. 'chrome', 'code', 'notepad').",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Optional full path to executable or file (overrides name if given).",
+                },
+                "args": {
+                    "type": "string",
+                    "description": "Optional command-line arguments.",
+                },
+            },
+            "required": [],
         },
     ),
 ]
@@ -1391,6 +1514,220 @@ def _call_github_op(args: dict) -> CallToolResult:
         return _error_result(f"GitHub operation timed out: {op}")
     except Exception as exc:
         return _error_result(f"GitHub op error: {exc}")
+
+
+# ── Volume, OCR, Google Search, App Launcher ────────────────────────────────
+
+def _call_volume_control(args: dict) -> CallToolResult:
+    """Volume control via Windows WM_APPCOMMAND broadcast."""
+    action = str(args.get("action", "get")).lower()
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        HWND_BROADCAST = 0xFFFF
+        WM_APPCOMMAND = 0x0319
+        SMTO_ABORTIFHUNG = 0x0002
+        APPCOMMAND_VOLUME_MUTE = 0x00080000
+        APPCOMMAND_VOLUME_DOWN = 0x00090000
+        APPCOMMAND_VOLUME_UP = 0x000A0000
+
+        def _send_cmd(cmd: int):
+            user32.SendMessageTimeoutW(HWND_BROADCAST, WM_APPCOMMAND, 0, cmd, SMTO_ABORTIFHUNG, 5000, None)
+
+        if action == "get":
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "(Get-Volume -Audio).VolumePercent"],
+                capture_output=True, text=True, timeout=5
+            )
+            level = int(r.stdout.strip()) if r.stdout.strip().isdigit() else -1
+            return _tool_result({"success": True, "level": level})
+
+        if action == "set":
+            level = max(0, min(100, int(args.get("level", 50))))
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "(Get-Volume -Audio).VolumePercent"],
+                capture_output=True, text=True, timeout=5
+            )
+            current = int(r.stdout.strip()) if r.stdout.strip().isdigit() else 50
+            diff = level - current
+            if diff > 0:
+                for _ in range((diff + 4) // 5):
+                    _send_cmd(APPCOMMAND_VOLUME_UP)
+            elif diff < 0:
+                for _ in range((-diff + 4) // 5):
+                    _send_cmd(APPCOMMAND_VOLUME_DOWN)
+            return _tool_result({"success": True, "action": "set", "level": level})
+
+        if action == "mute":
+            _send_cmd(APPCOMMAND_VOLUME_MUTE)
+            return _tool_result({"success": True, "action": "mute"})
+
+        if action == "unmute":
+            _send_cmd(APPCOMMAND_VOLUME_MUTE)
+            return _tool_result({"success": True, "action": "unmute"})
+
+        if action in ("up", "down"):
+            step = int(args.get("step", 5))
+            cmd = APPCOMMAND_VOLUME_UP if action == "up" else APPCOMMAND_VOLUME_DOWN
+            for _ in range((step + 4) // 5):
+                _send_cmd(cmd)
+            return _tool_result({"success": True, "action": action, "step": step})
+
+        return _error_result(f"Unknown volume action: {action!r}")
+
+    except Exception as exc:
+        logger.error("volume_control error: %s", exc)
+        return _error_result(f"Volume control failed: {exc}")
+
+
+def _call_screen_ocr(args: dict) -> CallToolResult:
+    """OCR on a screenshot using pytesseract."""
+    try:
+        import pytesseract
+    except ImportError:
+        return _error_result("pytesseract not installed. Run: pip install pytesseract")
+
+    try:
+        from PIL import Image
+    except ImportError:
+        return _error_result("PIL not installed. Run: pip install Pillow")
+
+    region_str = str(args.get("region", "full")).strip().lower()
+    lang = str(args.get("language", "eng"))
+    max_len = int(args.get("max_length", 4000))
+
+    # Capture region
+    with mss() as sct:
+        monitors = sct.monitors
+        full = monitors[1]  # primary monitor rect
+        if region_str == "full":
+            region = full
+        elif "," in region_str:
+            parts = region_str.split(",")
+            region = {"left": int(parts[0]), "top": int(parts[1]),
+                      "width": int(parts[2]), "height": int(parts[3])}
+        elif region_str == "top":
+            h = full["height"] // 3
+            region = {**full, "height": h}
+        elif region_str == "bottom":
+            h = full["height"] // 3
+            region = {**full, "top": full["top"] + 2 * h, "height": h}
+        elif region_str == "left":
+            w = full["width"] // 3
+            region = {**full, "width": w}
+        elif region_str == "right":
+            w = full["width"] // 3
+            region = {**full, "left": full["left"] + 2 * w, "width": w}
+        elif region_str == "center":
+            w, h = full["width"] // 3, full["height"] // 3
+            region = {**full, "left": full["left"] + full["width"] // 2 - w // 2,
+                      "top": full["top"] + full["height"] // 2 - h // 2, "width": w, "height": h}
+        else:
+            region = full
+
+        raw = sct.grab(region)
+
+    img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+
+    try:
+        text = pytesseract.image_to_string(img, lang=lang)
+    except Exception as exc:
+        return _error_result(f"OCR failed: {exc}")
+
+    text = text[:max_len]
+    logger.info("OCR complete: %d chars extracted", len(text))
+    return _tool_result({"success": True, "text": text, "region": region, "length": len(text)})
+
+
+def _call_google_search(args: dict) -> CallToolResult:
+    """Search Google and optionally open results in browser."""
+    query = str(args.get("query", "")).strip()
+    open_browser = bool(args.get("open_browser", True))
+    max_results = int(args.get("max_results", 5))
+
+    search_url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
+    if open_browser:
+        webbrowser.open(search_url, new=1, autoraise=True)
+
+    # Fetch a content preview
+    try:
+        import requests
+        resp = requests.get(search_url, timeout=10,
+                            headers={"User-Agent": "CoreControl/1.0"})
+        import re
+        # Extract text snippets from Google's HTML
+        text = re.sub(r'<[^>]+>', ' ', resp.text)
+        text = re.sub(r'\s+', ' ', text).strip()[:8000]
+        # Try to find snippet elements (Google's meta descriptions)
+        snippets = re.findall(r'(?<=<span[^>]*class="[^"]*[^"]*")[^<]{50,300}', text)
+        snippets = snippets[:max_results]
+    except Exception as exc:
+        logger.warning("Google search fetch failed: %s", exc)
+        snippets = []
+
+    return _tool_result({
+        "success": True,
+        "query": query,
+        "search_url": search_url,
+        "browser_opened": open_browser,
+        "snippets": snippets if snippets else ["(Could not fetch snippets — browser opened instead)"],
+    })
+
+
+def _call_app_launcher(args: dict) -> CallToolResult:
+    """Launch an application by name or path (enhanced app launcher)."""
+    target = str(args.get("path", args.get("name", ""))).strip()
+    extra_args = str(args.get("args", "")).strip()
+    if not target:
+        return _error_result("Provide either 'name' or 'path'")
+
+    platform_sys = platform.system()
+    full_cmd = target
+    if extra_args:
+        full_cmd += " " + extra_args
+
+    try:
+        if platform_sys == "Windows":
+            # Map common shortcut names to actual executables
+            shortcuts = {
+                "settings": "ms-settings:",
+                "calculator": "calc",
+                "notepad": "notepad",
+                "paint": "ms-paint:",
+                "photos": "ms-photos:",
+                "store": "ms-windows-store:",
+                "explorer": "explorer",
+                "cmd": "cmd /k",
+                "powershell": "powershell -NoExit",
+                "taskmgr": "taskmgr",
+                "services": "services.msc",
+                "diskmgmt": "diskmgmt.msc",
+                "devmgmt": "devmgmt.msc",
+                "eventvwr": "eventvwr",
+                "control": "control",
+                "perfmon": "perfmon",
+                "regedit": "regedit",
+                "wordpad": "wordpad",
+                "zoom": "zoom://",
+                "teams": "msteams:",
+                "discord": "discord:",
+                "spotify": "spotify:",
+            }
+            lower_target = target.lower()
+            if lower_target in shortcuts:
+                full_cmd = shortcuts[lower_target]
+                if extra_args:
+                    full_cmd += " " + extra_args
+
+            proc = subprocess.Popen(full_cmd, shell=True, creationflags=0)
+        else:
+            proc = subprocess.Popen(full_cmd, shell=True)
+
+        return _tool_result({"success": True, "launched": target, "platform": platform_sys, "command": full_cmd})
+    except Exception as exc:
+        return _error_result(f"Could not launch {target}: {exc}")
 
 
 # ── Entry point ──────────────────────────────────────────────────────────────
