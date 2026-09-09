@@ -14,9 +14,11 @@ import io
 import json
 import logging
 import os
+import platform
 import subprocess
 import sys
 import time
+import webbrowser
 from pathlib import Path
 from typing import Any
 
@@ -123,6 +125,8 @@ async def handle_call_tool(context, params) -> CallToolResult:
             return _call_web_go_back(arguments)
         elif name == "web_evaluate":
             return _call_web_evaluate(arguments)
+        elif name == "open_url":
+            return _call_open_url(arguments)
         else:
             return CallToolResult(content=[TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))], isError=True)
     except Exception as exc:
@@ -395,6 +399,29 @@ TOOLS: list[Tool] = [
                 },
             },
             "required": ["script"],
+        },
+    ),
+    Tool(
+        name="open_url",
+        description=(
+            "Open a URL in the system's default web browser. "
+            "Use this whenever the user asks you to browse a website, open a link, "
+            "visit a page, or show them something on the web. "
+            "Do NOT use web_navigate for this — use open_url instead to open the user's own browser."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "The full URL to open (must start with http:// or https://).",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Optional human-readable label for the action (e.g. 'Opening YouTube', 'Viewing GitHub repo').",
+                },
+            },
+            "required": ["url"],
         },
     ),
 ]
@@ -773,6 +800,26 @@ def _call_get_current_time(args: dict) -> CallToolResult:
         "timezone": str(now.tzinfo),
         "utc_offset": now.strftime("%z"),
     })
+
+
+def _call_open_url(args: dict) -> CallToolResult:
+    """Open a URL in the system default browser."""
+    url = str(args.get("url", "")).strip()
+    title = str(args.get("title", "URL"))
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    try:
+        webbrowser.open(url, new=1, autoraise=True)
+        logger.info("Opened %r in browser — %s", url, title)
+        return _tool_result({
+            "success": True,
+            "url": url,
+            "title": title,
+            "platform": platform.system(),
+        })
+    except Exception as exc:
+        logger.error("open_url error: %s", exc)
+        return _error_result(f"Could not open URL: {exc}")
 
 
 def _call_get_location(args: dict) -> CallToolResult:
