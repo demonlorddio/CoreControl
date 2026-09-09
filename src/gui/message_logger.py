@@ -71,7 +71,7 @@ class MessageLogger:
         for e in entries:
             role = e.get("role", "?")
             ts = e.get("ts", "")
-            text = e.get("text", "").replace("\n", "<br>").replace("<", "&lt;").replace(">", "&gt;")
+            text = e.get("text", "").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
             cls = "user" if role == "user" else "assistant"
             label = "You" if role == "user" else "Sage"
             rows_html += f'<tr class="{cls}"><td class="ts">{ts}</td><td class="label">{label}</td><td class="msg">{text}</td></tr>\n'
