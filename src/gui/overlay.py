@@ -261,6 +261,7 @@ class SubtitleWindow(QWidget):
     """
     Standalone subtitle window that displays speech text independently
     from the main overlay bot. Closing it does not affect the bot.
+    Positioned at bottom-center of screen like real movie subtitles.
     """
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
@@ -271,25 +272,54 @@ class SubtitleWindow(QWidget):
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.Tool
         )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        # No translucent background — solid fill ensures visibility on any desktop
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        # Enable mouse tracking for drag support
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
 
         self._text = ""
         self._font = QFont("Consolas", 13)
         self._font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+        self._drag_start: Optional[QPoint] = None
 
-        # Minimal size, will expand when text appears
-        self.setFixedSize(100, 30)
+        # Start hidden, minimal size
+        self.setFixedSize(100, 40)
+        self.hide()
 
-        # Style to match the overlay aesthetic
-        self.setStyleSheet(
-            "SubtitleWindow { background: transparent; }"
-        )
+    # ── Drag support ─────────────────────────────────────────────────────────
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._drag_start is not None and event.buttons() == Qt.MouseButton.LeftButton:
+            new_pos = event.globalPosition().toPoint() - self._drag_start
+            self.move(new_pos)
+            event.accept()
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start = None
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+            event.accept()
 
     def show_text(self, text: str) -> None:
-        """Display subtitle text."""
+        """Display subtitle text at bottom-center of primary screen."""
         self._text = text
         self._update_size()
+
+        # Position at bottom-center of primary screen
+        screen = QApplication.primaryScreen()
+        geo = screen.availableGeometry()
+        sub_w = self.width()
+        sub_h = self.height()
+        x = (geo.width() - sub_w) // 2
+        y = geo.bottom() - sub_h - 24
+        self.move(x, y)
+
         self.show()
         self.activateWindow()
         self.raise_()
@@ -299,18 +329,18 @@ class SubtitleWindow(QWidget):
         """Clear subtitle text and hide window."""
         self._text = ""
         self.hide()
-        self.setFixedSize(100, 30)
+        self.setFixedSize(100, 40)
         self.update()
 
     def _update_size(self) -> None:
         if not self._text:
-            self.setFixedSize(100, 30)
+            self.setFixedSize(100, 40)
             return
         fm = QFontMetrics(self._font)
         lines = self._text.split("\n")
-        max_width = max(fm.horizontalAdvance(line) for line in lines)
-        padding_x = 20
-        padding_y = 12
+        max_width = min(max(fm.horizontalAdvance(line) for line in lines), 700)
+        padding_x = 16
+        padding_y = 8
         line_height = fm.height() + 4
         total_h = len(lines) * line_height + padding_y * 2
         self.setFixedSize(int(max_width) + padding_x * 2, int(total_h))
@@ -325,19 +355,20 @@ class SubtitleWindow(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Dark semi-transparent background
-        bg = QColor(10, 15, 30, 210)
+        # Solid dark navy background — visible on any desktop
+        bg = QColor(8, 12, 30)
         p.setBrush(bg)
-        border = QColor(80, 130, 255, 160)
-        p.setPen(QPen(border, 1.5))
-        p.drawRoundedRect(1, 1, self.width() - 2, self.height() - 2, 8, 8)
+        # Bright cyan-blue border
+        border = QColor(80, 170, 255)
+        p.setPen(QPen(border, 2))
+        p.drawRoundedRect(1, 1, self.width() - 2, self.height() - 2, 10, 10)
 
-        # Text
+        # Bright white text for maximum readability
         p.setFont(self._font)
-        p.setPen(QColor(190, 230, 255))
+        p.setPen(QColor(245, 252, 255))
         fm = QFontMetrics(self._font)
         lines = self._text.split("\n")
-        padding = 20
+        padding = 16
         line_height = fm.height() + 4
         for i, line in enumerate(lines):
             y = padding + i * line_height + fm.ascent()
@@ -880,13 +911,15 @@ class OverlayWidget(QWidget):
         return self._estimated_duration_ms(text)
 
     def _show_speech_text(self, text: str, duration_ms: int = 0) -> None:
-        """Display speech text and start playback timer. Called from main thread."""
-        self._bubble.speak(text)
-        self._update_widget_size()
-        self._reposition_bubble()
-        # Push text to subtitle window if enabled
+        """Display speech text in subtitle window and start playback timer. Called from main thread."""
+        logger.info("_show_speech_text called: %r (dur=%dms)", text[:60], duration_ms)
+        # Push text to subtitle window only (not the bubble)
         if self._subtitles_enabled:
-            self._get_subtitle_window().show_text(text)
+            sw = self._get_subtitle_window()
+            sw.show_text(text)
+            logger.info("Subtitle window shown: visible=%s pos=%s", sw.isVisible(), sw.pos())
+        else:
+            logger.info("Subtitles disabled, skipping subtitle window")
         # Start safety-net timer with actual duration if available
         if duration_ms > 0:
             self._speech_timer.setInterval(duration_ms + 500)
@@ -1038,18 +1071,24 @@ class OverlayWidget(QWidget):
         logger = logging.getLogger("corecontrol.overlay")
         logger.info("speak() called with: %r", text[:80])
         self._speech_text = text
-        self._speech_timer.stop()  # Disable safety-net until we know duration
+        self._speech_timer.stop()  # Stop any pending safety-net
 
-        # Generate audio in background (text will appear after generation completes)
-        audio_duration_ms = self._speak_local(text)
-
+        # Estimate duration for immediate display (real duration from audio plays in background)
+        estimated_ms = self._estimated_duration_ms(text)
         if duration_ms > 0:
-            audio_duration_ms = max(audio_duration_ms, duration_ms)
+            estimated_ms = max(estimated_ms, duration_ms)
 
-        # Start a monitoring timer that will enable the safety-net after TTS completes
-        # The background thread will set _last_speech_duration_ms and enable the safety-net
-        QTimer.singleShot(audio_duration_ms + 500, self._enable_speech_safety_net)
-        logger.debug("TTS started, bubble will show after generation (~%d ms)", audio_duration_ms)
+        # Show text immediately so the user sees it right away
+        QTimer.singleShot(0, lambda: self._show_speech_text(text, estimated_ms))
+        logger.debug("Bubble shown immediately, TTS running in background (~%d ms)", estimated_ms)
+
+        # Generate audio in background (updates duration once known)
+        audio_duration_ms = self._speak_local(text)
+        if audio_duration_ms > 0:
+            estimated_ms = max(estimated_ms, audio_duration_ms)
+
+        # Start safety-net timer after TTS would normally finish
+        QTimer.singleShot(estimated_ms + 500, self._enable_speech_safety_net)
 
     def _enable_speech_safety_net(self) -> None:
         """Enable safety-net timer if TTS hasn't completed yet."""
@@ -1157,11 +1196,7 @@ class OverlayWidget(QWidget):
         if self._subtitle_window is None:
             self._subtitle_window = SubtitleWindow()
             self._subtitle_window.set_font(QFont("Consolas", 13))
-            # Position below and to the right of the overlay
-            geo = self.geometry()
-            sub_x = geo.right() + 16
-            sub_y = geo.bottom() + 16
-            self._subtitle_window.move(sub_x, sub_y)
+            logger.info("Created subtitle window")
         return self._subtitle_window
 
     def _toggle_subtitles(self) -> None:

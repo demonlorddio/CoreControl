@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+import webbrowser
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -44,6 +45,12 @@ def _load_settings() -> dict:
 
 
 _settings = _load_settings()
+
+# ── Message Logger ────────────────────────────────────────────────────────────
+from src.gui.message_logger import MessageLogger, get_html_path
+
+_msg_log = MessageLogger()
+_msg_log.reset()  # clear on every bot start
 
 # ── Hotkey listener (background thread) ──────────────────────────────────────
 
@@ -153,6 +160,8 @@ def _run_overlay_thread(
                 logger.warning("Main event loop not running, dropping transcription")
                 return
 
+            _msg_log.log_user(text)
+
             overlay.set_state(NPCState.PROCESSING)
             overlay.speak("Analysis in progress…", duration_ms=0)
 
@@ -162,6 +171,7 @@ def _run_overlay_thread(
                 try:
                     result = _fut.result()
                     logger.info("Orchestrator result text (first 80 chars): %r", result.text[:80])
+                    _msg_log.log_assistant(result.text)
                     overlay.response_received.emit(result.text)
                 except Exception as exc:
                     logger.error("Voice result callback error: %s", exc, exc_info=True)
@@ -187,6 +197,8 @@ def _run_overlay_thread(
             if orch is None:
                 logger.warning("Orchestrator not ready, dropping prompt")
                 return
+            _msg_log.log_user(text)
+
             overlay.set_state(NPCState.PROCESSING)
             overlay.speak("Analysis in progress…", duration_ms=0)
 
@@ -196,6 +208,7 @@ def _run_overlay_thread(
                 try:
                     result = _fut.result()
                     logger.info("Text prompt result (first 80 chars): %r", result.text[:80])
+                    _msg_log.log_assistant(result.text)
                     overlay.response_received.emit(result.text)
                 except Exception as exc:
                     logger.error("Text prompt result callback error: %s", exc, exc_info=True)
@@ -301,6 +314,10 @@ def main() -> None:
 
         logger.info("CoreControl Great Sage ready. Press Ctrl+Space to activate voice.")
         logger.info("Close the overlay window to exit.")
+
+        # Open message log in browser
+        log_url = get_html_path().resolve().as_uri()
+        webbrowser.open(log_url)
 
         try:
             await shutdown_event.wait()

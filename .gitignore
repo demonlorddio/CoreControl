@@ -26,6 +26,8 @@ wheels/
 # Logs
 logs/
 *.log
+logs/*.html
+logs/*.jsonl
 
 # Images / screenshots
 *.jpg
