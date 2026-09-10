@@ -158,6 +158,8 @@ async def handle_call_tool(context, params) -> CallToolResult:
             return _call_google_search(arguments)
         elif name == "app_launcher":
             return _call_app_launcher(arguments)
+        elif name == "print_file":
+            return _call_print_file(arguments)
         else:
             return CallToolResult(content=[TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))], isError=True)
     except Exception as exc:
@@ -795,6 +797,35 @@ TOOLS: list[Tool] = [
                 "args": {
                     "type": "string",
                     "description": "Optional command-line arguments.",
+                },
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="print_file",
+        description=(
+            "Print an image or text file to the default Windows printer. "
+            "Supports PNG, JPG, BMP, and PDF files. "
+            "Use this when Master asks to 'print an image', 'print a screenshot', "
+            "'print the picture at <path>', or 'take a screenshot and print it'."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the image or PDF file to print.",
+                },
+                "capture_and_print": {
+                    "type": "boolean",
+                    "description": "If true, capture the current screen and print the screenshot instead of using a file path.",
+                    "default": False,
+                },
+                "copies": {
+                    "type": "integer",
+                    "description": "Number of copies to print (default: 1).",
+                    "default": 1,
                 },
             },
             "required": [],
@@ -1728,6 +1759,116 @@ def _call_app_launcher(args: dict) -> CallToolResult:
         return _tool_result({"success": True, "launched": target, "platform": platform_sys, "command": full_cmd})
     except Exception as exc:
         return _error_result(f"Could not launch {target}: {exc}")
+
+
+def _call_print_file(args: dict) -> CallToolResult:
+    """Print an image or text file to the default Windows printer."""
+    try:
+        import win32print
+        import win32ui
+        import win32con
+    except ImportError:
+        return _error_result("win32print/win32ui not available — install pywin32")
+
+    capture = bool(args.get("capture_and_print", False))
+    copies = max(1, int(args.get("copies", 1)))
+    path_arg = str(args.get("path", "")).strip()
+
+    # --- Capture screenshot if requested ---
+    if capture:
+        monitor_idx = int(args.get("monitor_index", 0))
+        with mss() as sct:
+            monitors = sct.monitors
+            real_monitors = monitors[1:]
+            if monitor_idx >= len(real_monitors):
+                monitor_idx = 0
+            region = real_monitors[monitor_idx]
+            raw = sct.grab(region)
+        img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+        # Save to a temp PNG for the printer
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        tmp.close()
+        img.save(tmp.name, "PNG")
+        file_path = tmp.name
+        logger.info("Captured screenshot → %s (%dx%d)", file_path, raw.width, raw.height)
+    elif path_arg:
+        file_path = str(Path(path_arg).expanduser().resolve())
+        if not Path(file_path).is_file():
+            return _error_result(f"File not found: {file_path}")
+    else:
+        return _error_result("Provide either 'path' to a file or set capture_and_print=True")
+
+    # --- Print the file ---
+    try:
+        _print_image(file_path, copies)
+        logger.info("Printed %s (%d copy/copies) → %s", file_path, copies, win32print.GetDefaultPrinter())
+        result = {
+            "success": True,
+            "printer": win32print.GetDefaultPrinter(),
+            "file": file_path,
+            "copies": copies,
+            "captured_screenshot": capture,
+        }
+        return _tool_result(result)
+    except Exception as exc:
+        logger.error("Print failed: %s", exc)
+        return _error_result(f"Print failed: {exc}")
+    finally:
+        # Clean up temp screenshot file if we created one
+        if capture and Path(file_path).exists():
+            try:
+                Path(file_path).unlink()
+            except Exception:
+                pass
+
+
+def _print_image(file_path: str, copies: int) -> None:
+    """Print an image file to the default Windows printer using win32ui."""
+    import win32print
+    import win32ui
+
+    printer_name = win32print.GetDefaultPrinter()
+    hdc = win32ui.CreatePrinterDC(printer_name)
+
+    # Get printable area in pixels
+    printer_dc = hdc.GetHandle()
+    page_width = win32print.GetDeviceCaps(printer_dc, win32con.DM.paperwidth)   # in tenths of mm
+    page_height = win32print.GetDeviceCaps(printer_dc, win32con.DM.paperheight)
+    res_x = win32print.GetDeviceCaps(printer_dc, win32con.LOGPIXELSX)
+    res_y = win32print.GetDeviceCaps(printer_dc, win32con.LOGPIXELSY)
+
+    # Convert to pixels
+    printable_w = int(page_width * res_x / 2540)  # tenths of mm → inches → pixels
+    printable_h = int(page_height * res_y / 2540)
+
+    # Load image
+    img = Image.open(file_path)
+    img_w, img_h = img.size
+    # Scale to fit printable area, preserving aspect ratio
+    scale = min(printable_w / img_w, printable_h / img_h)
+    draw_w = int(img_w * scale)
+    draw_h = int(img_h * scale)
+    # Center on page
+    x_offset = (printable_w - draw_w) // 2
+    y_offset = (printable_h - draw_h) // 2
+
+    hdc.StartDoc(file_path)
+    for i in range(copies):
+        hdc.StartPage()
+        bmp = win32ui.CreateBitmap()
+        bmp.CreateCompatibleBitmap(hdc, draw_w, draw_h)
+        hdc.SelectObject(bmp)
+        # Draw scaled image
+        hdc.StretchBlt(
+            x_offset, y_offset, draw_w, draw_h,
+            img.tobytes("raw", "RGB"),
+            img_w, img_h,
+            win32con.SRCCOPY,
+        )
+        hdc.EndPage()
+    hdc.EndDoc()
+    hdc.DeleteDC()
 
 
 # ── Entry point ──────────────────────────────────────────────────────────────
