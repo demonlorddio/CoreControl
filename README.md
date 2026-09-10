@@ -89,10 +89,17 @@ main.py                    PyQt6 overlay thread
 
 ## Configuration
 
-Edit `config/settings.json` (copy from `config/settings.json.example`):
+> **⚠️ Important:** The repository does **not** ship with API keys. You must provide your own.
+> `config/settings.json` is excluded from git. Copy the example file and fill in your own values:
+>
+> ```bash
+> cp config/settings.json.example config/settings.json
+> # Then edit config/settings.json with your own keys
+> ```
 
 | Section | Key | Description |
 |---------|-----|-------------|
+| `online_llm` | `api_key` | Your OmniRoute / OpenAI-compatible API key (leave empty for free mode) |
 | `online_llm` | `api_base_url` | OmniRoute endpoint (`http://localhost:20128/v1`) |
 | `online_llm` | `model` | Model name (`"auto"` uses gateway default) |
 | `local_llm` | `api_base_url` | Ollama endpoint (`http://localhost:11434`) |
@@ -100,6 +107,11 @@ Edit `config/settings.json` (copy from `config/settings.json.example`):
 | `security` | `require_confirmation_for_actions` | Tools needing HITL approval |
 | `audio` | `transcription_model` | Whisper model (`"base.en"`, `"small.en"`) |
 | `overlay` | `position` | Initial (x, y) placement |
+
+**No API key?** The app falls back to free modes automatically:
+- Online LLM: uses `"omni-route-free"` key (limited)
+- Local LLM: uses Ollama (requires `ollama serve` running)
+- TTS: uses Edge-TTS (free, no key needed)
 
 ## Platform Permissions
 

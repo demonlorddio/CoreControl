@@ -24,7 +24,7 @@
   },
   "online_llm": {
     "provider": "omni-route",
-    "api_key": "sk-c4b605d1bed6dbc2-ea5dcd-13b198a2",
+    "api_key": "YOUR_OMNIRoute_API_KEY_HERE",
     "api_base_url": "http://localhost:20128/v1",
     "model": "auto",
     "max_tokens": 4096,
