@@ -1,13 +1,17 @@
 """
 Voice Activity Detection and audio recording module for CoreControl.
 Listens to microphone input, detects speech via energy-based VAD,
-transcribes with faster-whisper, and routes text to the orchestrator.
+transcribes complete utterances using a standalone Whisper subprocess
+(to avoid CTranslate2 segfaulting with PyQt6), and routes text to
+the orchestrator.
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import queue
+import subprocess
 import sys
 import threading
 import time
@@ -33,7 +37,7 @@ def _load_audio_settings() -> dict:
 _cfg = _load_audio_settings()
 SAMPLE_RATE: int = _cfg.get("sample_rate", 16000)
 CHANNELS: int = 1
-VAD_THRESHOLD: float = _cfg.get("vad_threshold", 0.5)
+_RAW_VAD_THRESHOLD: float = _cfg.get("vad_threshold", None)  # None = auto-calibrate
 MIN_SILENCE_MS: int = _cfg.get("min_silence_duration_ms", 1000)
 WHISPER_MODEL: str = _cfg.get("transcription_model", "base.en")
 
@@ -41,18 +45,112 @@ WHISPER_MODEL: str = _cfg.get("transcription_model", "base.en")
 BLOCK_SIZE: int = int(SAMPLE_RATE * 0.03)
 SILENCE_BLOCKS: int = max(1, int(MIN_SILENCE_MS / 30))
 
+# ── Whisper subprocess (module-level singleton) ───────────────────────────────
+# CTranslate2 segfaults inside the same process as PyQt6, so we run Whisper
+# in a separate subprocess that talks to us via JSON over stdin/stdout.
+_whisper_proc: Optional[subprocess.Popen] = None
+_whisper_lock = threading.Lock()
+
+
+def _start_whisper_worker() -> None:
+    """Launch the standalone Whisper transcription worker subprocess."""
+    global _whisper_proc
+    try:
+        script = Path(__file__).parent / "whisper_worker.py"
+        _whisper_proc = subprocess.Popen(
+            [sys.executable, str(script), WHISPER_MODEL],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,  # line-buffered
+        )
+        logger.info("Whisper subprocess started (pid=%d)", _whisper_proc.pid)
+    except Exception as exc:
+        logger.error("Failed to start Whisper subprocess: %s", exc)
+        _whisper_proc = None
+
+
+def _stop_whisper_worker() -> None:
+    """Gracefully shut down the Whisper subprocess."""
+    global _whisper_proc
+    if _whisper_proc is None:
+        return
+    try:
+        _whisper_proc.stdin.write(json.dumps({"stop": True}) + "\n")
+        _whisper_proc.stdin.flush()
+        _whisper_proc.wait(timeout=3)
+    except Exception as exc:
+        logger.debug("Whisper subprocess cleanup: %s", exc)
+    finally:
+        _whisper_proc = None
+
+
+def _whisper_transcribe(audio: np.ndarray) -> str:
+    """
+    Send audio to the Whisper subprocess and return the transcribed text.
+    Audio is serialized as base64-encoded float32 bytes.
+    """
+    global _whisper_proc
+    if _whisper_proc is None:
+        return ""
+    try:
+        audio_b64 = base64.b64encode(audio.tobytes()).decode("ascii")
+        req = json.dumps({"audio": audio_b64, "len": len(audio)})
+        with _whisper_lock:
+            _whisper_proc.stdin.write(req + "\n")
+            _whisper_proc.stdin.flush()
+            line = _whisper_proc.stdout.readline()
+        resp = json.loads(line)
+        return resp.get("text", "") or resp.get("error", "")
+    except Exception as exc:
+        logger.error("Whisper subprocess error: %s", exc)
+        return ""
+
+
+# ── VAD calibration ───────────────────────────────────────────────────────────
+
+def _calibrate_vad_threshold() -> float:
+    """Measure ambient noise for 1.5 s and return a threshold 3× the RMS peak."""
+    try:
+        import sounddevice as sd
+    except ImportError:
+        return 0.03  # fallback
+    frames: list[np.ndarray] = []
+
+    def _cb(_indata, _frames, _time_info, _status):  # noqa: D401
+        if not _status:
+            frames.append(_indata[:, 0].copy())
+
+    try:
+        with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS,
+                            blocksize=BLOCK_SIZE, dtype="float32", callback=_cb):
+            time.sleep(1.5)
+    except Exception as exc:
+        logger.warning("VAD calibration failed (%s), using default threshold", exc)
+        return 0.03
+    if not frames:
+        return 0.03
+    all_data = np.concatenate(frames)
+    rms = float(np.sqrt(np.mean(all_data ** 2)))
+    threshold = max(rms * 3.0, 0.005)  # at least 0.005 to catch quiet speech
+    logger.info("VAD calibrated: ambient RMS=%.4f, threshold=%.4f", rms, threshold)
+    return float(threshold)
+
+
+# Resolve VAD threshold: explicit config > auto-calibrated > hardcoded default
+VAD_THRESHOLD: float = (
+    _RAW_VAD_THRESHOLD
+    if _RAW_VAD_THRESHOLD is not None
+    else _calibrate_vad_threshold()
+)
+
 
 class AudioRecorder:
     """
     Background thread that captures microphone audio, performs energy-based VAD,
-    and transcribes complete utterances using faster-whisper (fully offline).
-
-    Usage:
-        def handle(text: str): print(text)
-        recorder = AudioRecorder(on_transcription=handle)
-        recorder.start()
-        ...
-        recorder.stop()
+    and transcribes complete utterances using a standalone Whisper subprocess
+    (to avoid CTranslate2 segfaulting when used alongside PyQt6).
     """
 
     def __init__(
@@ -71,13 +169,16 @@ class AudioRecorder:
         self._running = threading.Event()
         self._capture_thread: Optional[threading.Thread] = None
         self._process_thread: Optional[threading.Thread] = None
-        self._model = None  # loaded lazily
         self.is_recording: bool = False  # True while speech is accumulating
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def start(self) -> None:
         """Start microphone capture and transcription processing threads."""
+        # Ensure the Whisper subprocess is running
+        with _whisper_lock:
+            if _whisper_proc is None:
+                _start_whisper_worker()
         self._running.set()
         self._capture_thread = threading.Thread(
             target=self._capture_loop, daemon=True, name="audio-capture"
@@ -90,13 +191,14 @@ class AudioRecorder:
         logger.info("Audio recorder started (model=%s, sr=%d)", self._model_name, self._sample_rate)
 
     def stop(self) -> None:
-        """Stop both threads gracefully."""
+        """Stop both threads and the Whisper subprocess."""
         self._running.clear()
         if self._capture_thread and self._capture_thread.is_alive():
             self._capture_thread.join(timeout=3.0)
         if self._process_thread and self._process_thread.is_alive():
             self._audio_queue.put(None)  # poison pill
             self._process_thread.join(timeout=5.0)
+        _stop_whisper_worker()
         logger.info("Audio recorder stopped")
 
     # ── Internal loops ────────────────────────────────────────────────────────
@@ -182,39 +284,11 @@ class AudioRecorder:
         return rms > self._vad_threshold
 
     def _transcribe(self, audio: np.ndarray) -> None:
-        """Transcribe a complete speech segment using faster-whisper (offline)."""
+        """Transcribe a complete speech segment via the Whisper subprocess."""
         try:
-            if self._model is None:
-                self._model = self._load_model()
-            if self._model is None:
-                return
-
-            audio_float = audio.astype(np.float32)
-
-            segments, info = self._model.transcribe(
-                audio_float,
-                beam_size=5,
-                language="en",
-                vad_filter=True,
-            )
-            text = " ".join(seg.text for seg in segments).strip()
+            text = _whisper_transcribe(audio)
             if text:
                 logger.info("Transcribed: %r", text[:120])
                 self._callback(text)
         except Exception as exc:
             logger.error("Transcription error: %s", exc)
-
-    def _load_model(self):
-        """Lazily load the faster-whisper model."""
-        try:
-            from faster_whisper import WhisperModel
-            logger.info("Loading Whisper model: %s", self._model_name)
-            model = WhisperModel(self._model_name, device="cpu", compute_type="int8")
-            logger.info("Whisper model loaded")
-            return model
-        except ImportError:
-            logger.error("faster-whisper not installed. Run: pip install faster-whisper")
-            return None
-        except Exception as exc:
-            logger.error("Failed to load Whisper model: %s", exc)
-            return None

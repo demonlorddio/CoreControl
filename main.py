@@ -14,6 +14,7 @@ Controls:
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import logging
 import signal
@@ -22,6 +23,12 @@ import threading
 import time
 from pathlib import Path
 import webbrowser
+
+# ── Unicode codec patch — Windows console can't print emoji with cp1252 ──────
+try:
+    codecs.register(lambda name: codecs.getencoder("utf-8") if name == "cp65001" else None)
+except Exception:
+    pass
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -51,6 +58,64 @@ from src.gui.message_logger import MessageLogger, get_html_path
 
 _msg_log = MessageLogger()
 _msg_log.reset()  # clear on every bot start
+
+
+def _deduplicate_text(text: str) -> str:
+    """Strip consecutive duplicate phrases from LLM output.
+
+    Handles punctuation and case differences, e.g.
+    'Good job, good job.'              →  'Good job.'
+    'I'm sorry, I'm sorry, I'm sorry.' →  'I'm sorry.'
+    'The the quick brown fox'          →  'The quick brown fox'
+    """
+    import re
+    if not text:
+        return text
+
+    def _norm(s: str) -> str:
+        return re.sub(r"[^\w\s]", "", s).strip().lower()
+
+    # Split into alternating text/delimiter chunks:
+    #   'Good job, good job.' → ['Good job', ', ', 'good job', '.']
+    chunks = re.findall(r"[^,.;!?]+|[,.;!?]+\s*", text)
+
+    result_chunks: list[str] = []
+    prev_norm = ""
+    for chunk in chunks:
+        stripped = chunk.strip()
+        if not stripped:
+            result_chunks.append(chunk)
+            continue
+        n = _norm(stripped)
+        if not n:
+            # Pure-punctuation chunk — append but don't touch prev_norm
+            result_chunks.append(chunk)
+            continue
+        if n == prev_norm:
+            # Duplicate clause — skip it AND its preceding delimiter
+            if result_chunks and re.match(r"^[,.;!?]+\s*$", result_chunks[-1]):
+                result_chunks.pop()
+            continue
+        result_chunks.append(chunk)
+        prev_norm = n
+
+    result = "".join(result_chunks).strip()
+
+    # Fallback: if no punctuation was present at all, dedup consecutive words
+    if not re.search(r"[,.;!?]", text):
+        words = result.split()
+        if len(words) > 1:
+            w_result = [words[0]]
+            w_prev = _norm(words[0])
+            for w in words[1:]:
+                wn = _norm(w)
+                if wn == w_prev:
+                    continue
+                w_result.append(w)
+                w_prev = wn
+            result = " ".join(w_result)
+
+    return result
 
 # ── Hotkey listener (background thread) ──────────────────────────────────────
 
@@ -170,9 +235,10 @@ def _run_overlay_thread(
             def _on_result(_fut):
                 try:
                     result = _fut.result()
-                    logger.info("Orchestrator result text (first 80 chars): %r", result.text[:80])
-                    _msg_log.log_assistant(result.text)
-                    overlay.response_received.emit(result.text)
+                    clean = _deduplicate_text(result.text)
+                    logger.info("Orchestrator result text (first 80 chars): %r", clean[:80])
+                    _msg_log.log_assistant(clean)
+                    overlay.response_received.emit(clean)
                 except Exception as exc:
                     logger.error("Voice result callback error: %s", exc, exc_info=True)
             future.add_done_callback(_on_result)
@@ -184,7 +250,7 @@ def _run_overlay_thread(
         # Start Qt app
         _startup()
 
-        # Start audio recorder
+        # Start audio recorder (Whisper runs in a subprocess to avoid CTranslate2 segfault)
         recorder = AudioRecorder(on_transcription=_process_prompt)
         recorder.start()
 
@@ -207,9 +273,10 @@ def _run_overlay_thread(
             def _on_result(_fut):
                 try:
                     result = _fut.result()
-                    logger.info("Text prompt result (first 80 chars): %r", result.text[:80])
-                    _msg_log.log_assistant(result.text)
-                    overlay.response_received.emit(result.text)
+                    clean = _deduplicate_text(result.text)
+                    logger.info("Text prompt result (first 80 chars): %r", clean[:80])
+                    _msg_log.log_assistant(clean)
+                    overlay.response_received.emit(clean)
                 except Exception as exc:
                     logger.error("Text prompt result callback error: %s", exc, exc_info=True)
             future.add_done_callback(_on_result)
@@ -234,6 +301,15 @@ def _run_overlay_thread(
             if orch is not None:
                 orch.set_force_offline(enabled)
         overlay.force_offline_toggled.connect(_on_force_offline_toggled)
+
+        # Cutscene on skill execution
+        from src.gui.cutscene import get_cutscene
+        _cutscene_cfg = _settings.get("cutscene", {})
+        _cutscene_sound = _cutscene_cfg.get("sound_path")
+        def _on_cutscene() -> None:
+            if _cutscene_cfg.get("enabled", True):
+                get_cutscene().play(_cutscene_sound)
+        overlay.cutscene_triggered.connect(_on_cutscene)
 
         # Hotkey trigger
         hotkey = HotkeyTrigger(on_trigger=_handle_hotkey)
@@ -294,7 +370,7 @@ def main() -> None:
 
         from src.orchestrator import Orchestrator
 
-        orch = Orchestrator()
+        orch = Orchestrator(on_cutscene=lambda: overlay.cutscene_triggered.emit())
         _orch_handle[0] = orch
         _orch_ready.set()  # signal overlay thread that orchestrator is ready
         await orch.start()

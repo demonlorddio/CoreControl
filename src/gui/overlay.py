@@ -61,6 +61,23 @@ from PyQt6.QtWidgets import (
     QSystemTrayIcon,
     QWidget,
 )
+from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
+
+def _qt_message_handler(msg_type, _context, message):
+    """Suppress QTimer warnings from edge-tts running in non-Qt threads."""
+    if "Timers can only be used with threads started with QThread" in message:
+        return
+    # Forward all other Qt messages to Python logging
+    level_map = {
+        QtMsgType.QtDebugMsg: logging.DEBUG,
+        QtMsgType.QtInfoMsg: logging.INFO,
+        QtMsgType.QtWarningMsg: logging.WARNING,
+        QtMsgType.QtCriticalMsg: logging.ERROR,
+        QtMsgType.QtFatalMsg: logging.CRITICAL,
+    }
+    logger.log(level_map.get(msg_type, logging.WARNING), "[Qt] %s", message)
+
+qInstallMessageHandler(_qt_message_handler)
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +120,8 @@ class GreatSageAvatar(QWidget):
         self._is_blinking: bool = False
         self._core_hue: float = 200.0
         self._processing_spin: float = 0.0
+        self._pulse_phase: float = 0.0
+        self._speak_amplitude: float = 0.0
 
         # Load animated GIF — scale to fit inside the 200×220 widget
         self._movie: Optional[QMovie] = None
@@ -161,15 +180,26 @@ class GreatSageAvatar(QWidget):
         if self._state == NPCState.PROCESSING:
             self._processing_spin = (self._processing_spin + 0.15) % (2 * math.pi)
             self._core_hue = 200.0 + math.sin(self._processing_spin) * 60.0
+            self._pulse_phase = 0.0
             self.update()
         elif self._state == NPCState.LISTENING:
             self._core_hue = 210.0 + math.sin(self._processing_spin) * 20.0
             self._processing_spin += 0.1
+            self._pulse_phase = 0.0
+            self.update()
+        elif self._state == NPCState.SPEAKING:
+            # Pulse faster during speech, modulated by amplitude
+            amp = self._speak_amplitude
+            speed = 0.2 + amp * 0.3
+            self._processing_spin = (self._processing_spin + speed) % (2 * math.pi)
+            self._core_hue = 40.0 + math.sin(self._processing_spin) * 20.0  # warm gold
+            self._pulse_phase += 0.15 + amp * 0.2
             self.update()
         else:
             # Idle: slow hue drift
             self._core_hue = 210.0 + math.sin(self._processing_spin * 0.3) * 15.0
             self._processing_spin += 0.05
+            self._pulse_phase *= 0.9  # decay
             self.update()
 
     def set_state(self, state: NPCState) -> None:
@@ -177,6 +207,11 @@ class GreatSageAvatar(QWidget):
         self._processing_spin = 0.0
         if state in (NPCState.LISTENING, NPCState.PROCESSING):
             self._core_hue = 200.0
+        self.update()
+
+    def set_speaking_amplitude(self, amplitude: float) -> None:
+        """Call from main thread during TTS playback to drive the pulse ring."""
+        self._speak_amplitude = max(0.0, min(1.0, amplitude))
         self.update()
 
     def _on_frame_changed(self) -> None:
@@ -224,6 +259,22 @@ class GreatSageAvatar(QWidget):
         p.setBrush(dot_color)
         p.setPen(Qt.PenStyle.NoPen)
         p.drawEllipse(int(cx - 4), int(indicator_y), 8, 8)
+
+        # ── Audio-reactive pulse ring (SPEAKING state) ───────────────────
+        if self._state == NPCState.SPEAKING and self._speak_amplitude > 0.01:
+            amp = self._speak_amplitude
+            ring_pulse = 1.0 + math.sin(self._pulse_phase) * 0.12 * amp
+            ring_radius = 100 * ring_pulse
+            ring_alpha = int(60 + amp * 120)
+            p.setPen(QPen(QColor(255, 210, 100, ring_alpha), 2.5, Qt.PenStyle.SolidLine))
+            p.drawEllipse(int(cx - ring_radius), int(cy - ring_radius),
+                          int(ring_radius * 2), int(ring_radius * 2))
+            # Second thinner outer ring
+            ring2_pulse = 1.0 + math.sin(self._pulse_phase + 1.0) * 0.08 * amp
+            ring2_r = 108 * ring2_pulse
+            p.setPen(QPen(QColor(255, 230, 150, int(30 + amp * 60)), 1.5, Qt.PenStyle.SolidLine))
+            p.drawEllipse(int(cx - ring2_r), int(cy - ring2_r),
+                          int(ring2_r * 2), int(ring2_r * 2))
 
         # ── Blink overlay (IDLE only) ────────────────────────────────────
         if self._state == NPCState.IDLE and self._is_blinking:
@@ -686,6 +737,96 @@ class EditArgsDialog(QDialog):
             return self._current_args
 
 
+# ── Action Button ─────────────────────────────────────────────────────────────
+
+class _ActionButton(QPushButton):
+    """Small circular icon button for the overlay."""
+
+    def __init__(self, icon: str, parent: QWidget, callback: Callable[[], None]) -> None:
+        super().__init__(icon, parent)
+        self.setFixedSize(30, 26)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet(
+            "QPushButton { "
+            "    background: rgba(20, 35, 60, 200); "
+            "    color: rgba(180, 220, 255, 240); "
+            "    border: 1px solid rgba(100, 150, 255, 160); "
+            "    border-radius: 5px; "
+            "    font-size: 13px; "
+            "    padding: 0px; "
+            "} "
+            "QPushButton:hover { "
+            "    background: rgba(40, 70, 120, 220); "
+            "    border-color: rgba(140, 190, 255, 255); "
+            "} "
+            "QPushButton:pressed { "
+            "    background: rgba(60, 100, 160, 240); "
+            "}"
+        )
+        self.clicked.connect(callback)
+
+
+# ── Message Dialog ────────────────────────────────────────────────────────────
+
+class _MessageDialog(QDialog):
+    """Small text-input dialog opened by the ✉ button."""
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowFlags(
+            Qt.WindowType.Dialog
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFixedSize(320, 80)
+        self._setup_ui()
+
+    def _setup_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(6)
+
+        self._edit = QLineEdit(self)
+        self._edit.setPlaceholderText("Type a prompt…")
+        self._edit.setStyleSheet(
+            "QLineEdit { "
+            "    background: rgba(15, 25, 45, 220); "
+            "    color: rgba(200, 230, 255, 255); "
+            "    border: 1px solid rgba(100, 150, 255, 180); "
+            "    border-radius: 4px; "
+            "    padding: 4px 10px; "
+            "    font-size: 12px; "
+            "    font-family: Consolas; "
+            "} "
+            "QLineEdit:focus { border-color: rgba(140, 190, 255, 255); }"
+        )
+        self._edit.returnPressed.connect(self.accept)
+        layout.addWidget(self._edit)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        ok = QPushButton("Send", self)
+        ok.setStyleSheet(
+            "background: rgba(40, 100, 160, 200); color: white; "
+            "border-radius: 4px; padding: 4px 16px; font-family: Consolas; font-size: 11px;"
+        )
+        ok.clicked.connect(self.accept)
+        cancel = QPushButton("Cancel", self)
+        cancel.setStyleSheet(
+            "background: rgba(80, 80, 80, 180); color: white; "
+            "border-radius: 4px; padding: 4px 16px; font-family: Consolas; font-size: 11px;"
+        )
+        cancel.clicked.connect(self.reject)
+        btn_row.addStretch()
+        btn_row.addWidget(ok)
+        btn_row.addWidget(cancel)
+        layout.addLayout(btn_row)
+
+    def get_text(self) -> str:
+        return self._edit.text().strip()
+
+
 # ── Main Overlay Widget ───────────────────────────────────────────────────────
 
 class OverlayWidget(QWidget):
@@ -702,6 +843,7 @@ class OverlayWidget(QWidget):
     response_received = pyqtSignal(str)  # Emitted when orchestrator returns a response
     app_closing = pyqtSignal()  # Emitted on close
     force_offline_toggled = pyqtSignal(bool)  # Emitted when offline mode is toggled
+    cutscene_triggered = pyqtSignal()  # Emitted when a skill executes
 
     def __init__(
         self,
@@ -742,7 +884,7 @@ class OverlayWidget(QWidget):
         self._bubble.set_font(QFont("Consolas", 10))
         self._bubble.hide()
 
-        # ── Text prompt input ──────────────────────────────────────────
+        # ── Text prompt input (hidden by default — shown via MessageDialog) ─
         self._prompt_input = QLineEdit(self)
         self._prompt_input.setPlaceholderText("Type a prompt…")
         self._prompt_input.setFixedSize(190, 28)
@@ -763,6 +905,15 @@ class OverlayWidget(QWidget):
             "    background: rgba(25, 40, 70, 220); "
             "}"
         )
+        self._prompt_input.hide()
+
+        # ── Action buttons (Message + Voice) ─────────────────────────────
+        self._btn_message = _ActionButton("✉", self, self._open_message_dialog)
+        self._btn_voice = _ActionButton("🎤", self, self.on_avatar_clicked)
+        # Position below avatar, right-aligned
+        btn_y = 232
+        self._btn_voice.move(170, btn_y)
+        self._btn_message.move(136, btn_y)
 
         # ── Size ────────────────────────────────────────────────────────
         self._large_screen = False
@@ -773,6 +924,8 @@ class OverlayWidget(QWidget):
         self._audio_output: Optional[QAudioOutput] = None
         self._use_audio_player = False  # True = QtMultimedia, False = pygame (QtMultimedia unavailable on this system)
         self._large_screen_w, self._large_screen_h = 700, 520
+        self._cv_mode_enabled = False
+        self._hand_tracker = None  # HandTracker instance, started/stopped via tray menu
         self.setFixedSize(220, 280)
         self.move(initial_x, initial_y)
 
@@ -806,6 +959,10 @@ class OverlayWidget(QWidget):
         self._force_offline_act.setCheckable(True)
         self._force_offline_act.setChecked(False)
         self._force_offline_act.triggered.connect(self._toggle_force_offline)
+        self._cv_mode_act = self._tray_menu.addAction("CV Mode  (off)")
+        self._cv_mode_act.setCheckable(True)
+        self._cv_mode_act.setChecked(False)
+        self._cv_mode_act.triggered.connect(self._toggle_cv_mode)
         act_quit = self._tray_menu.addAction("Quit")
         act_quit.triggered.connect(self._do_quit)
 
@@ -895,9 +1052,14 @@ class OverlayWidget(QWidget):
                         self._last_speech_duration_ms = duration_ms
                         # Disable safety-net since we have real duration
                         QTimer.singleShot(0, self._speech_timer.stop)
+                        # Drive pulse ring at full amplitude during playback
+                        QTimer.singleShot(0, lambda: self._avatar.set_speaking_amplitude(0.9))
                         # Show text right before playback starts (via main thread)
                         QTimer.singleShot(0, lambda: self._show_speech_text(text_to_speak, duration_ms))
                         logger.debug("Audio duration: %d ms for: %s", duration_ms, text[:40])
+                        # Fade out pulse ring after speech ends
+                        QTimer.singleShot(duration_ms + 600,
+                                          lambda: self._avatar.set_speaking_amplitude(0.0))
                     else:
                         self._last_speech_duration_ms = self._estimated_duration_ms(text)
                         QTimer.singleShot(0, lambda: self._show_speech_text(text_to_speak, self._last_speech_duration_ms))
@@ -1116,6 +1278,14 @@ class OverlayWidget(QWidget):
         """Triggered by right-click on avatar — starts voice capture."""
         self.transcription_requested.emit()
 
+    def _open_message_dialog(self) -> None:
+        """Open the text-prompt dialog."""
+        dlg = _MessageDialog(self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            text = dlg.get_text()
+            if text:
+                self.prompt_submitted.emit(text)
+
     def request_hitl(
         self,
         request: HitlRequest,
@@ -1160,6 +1330,37 @@ class OverlayWidget(QWidget):
         self._force_offline_act.setText(f"Force Offline Mode  ({'on' if enabled else 'off'})")
         self.force_offline_toggled.emit(enabled)
         logger.info("Force offline mode toggled: %s", enabled)
+
+    def _toggle_cv_mode(self) -> None:
+        """Toggle OpenCV hand-tracking mouse control mode."""
+        self._cv_mode_enabled = not self._cv_mode_enabled
+        label = "on" if self._cv_mode_enabled else "off"
+        self._cv_mode_act.setText(f"CV Mode  ({label})")
+        if self._cv_mode_enabled:
+            self._start_cv_mode()
+        else:
+            self._stop_cv_mode()
+        logger.info("CV mode toggled: %s", self._cv_mode_enabled)
+
+    def _start_cv_mode(self) -> None:
+        from src.gui.hand_tracker import HandTracker
+        if self._hand_tracker is not None:
+            return
+        tracker = HandTracker()
+        # Detect screen size from the overlay's screen geometry
+        screen = self.screen()
+        if screen is not None:
+            geo = screen.availableGeometry()
+            tracker.set_screen_size(geo.width(), geo.height())
+        tracker.start()
+        self._hand_tracker = tracker
+        logger.info("CV mode started — hand tracker active")
+
+    def _stop_cv_mode(self) -> None:
+        if self._hand_tracker is not None:
+            self._hand_tracker.stop()
+            self._hand_tracker = None
+            logger.info("CV mode stopped")
 
     def _toggle_large_screen(self) -> None:
         """Toggle between normal (220×280) and large screen (700×520) modes."""
@@ -1265,6 +1466,8 @@ class OverlayWidget(QWidget):
         QApplication.instance().quit()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        # Stop hand tracker before shutting down
+        self._stop_cv_mode()
         # Stop audio on close
         if self._use_audio_player and self._audio_player:
             self._audio_player.stop()

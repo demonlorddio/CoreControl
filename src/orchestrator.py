@@ -490,10 +490,18 @@ class Orchestrator:
     Manages the perception → plan → act → verify cycle.
     """
 
+    # Tools that trigger a dramatic cutscene flash
+    CUTSCENE_TOOLS: set = {
+        "open_url", "launch_app", "app_launcher", "take_screenshot",
+        "execute_terminal_command", "annotate_screenshot", "screen_ocr",
+        "google_search", "search_youtube",
+    }
+
     def __init__(
         self,
         on_response: Optional[Callable[[ProcessResult], None]] = None,
         on_hitl_request: Optional[Callable[[str, dict], None]] = None,
+        on_cutscene: Optional[Callable[[], None]] = None,
     ) -> None:
         from src.utils.network import NetworkMonitor
 
@@ -507,6 +515,7 @@ class Orchestrator:
         self._running = False
         self._on_response = on_response
         self._on_hitl_request = on_hitl_request
+        self._on_cutscene = on_cutscene
         self._hitl_response_callbacks: dict[str, Callable] = {}
         self._force_offline = False
 
@@ -634,6 +643,10 @@ class Orchestrator:
                             collected_links.extend(found_urls)
 
                     logger.debug("Tool %s returned: %s", tool_name, str(result)[:120])
+
+                    # Trigger cutscene for high-impact skills
+                    if tool_name in self.CUTSCENE_TOOLS and self._on_cutscene:
+                        threading.main_thread().run(self._on_cutscene)
                 except MCPToolError as exc:
                     tool_results.append({"tool": tool_name, "error": str(exc)})
 
