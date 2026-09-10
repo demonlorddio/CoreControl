@@ -38,8 +38,8 @@ from PyQt6.QtGui import (
     QFont,
     QFontMetrics,
     QIcon,
-    QMovie,
     QMouseEvent,
+    QMovie,
     QPainter,
     QPaintEvent,
     QPen,
@@ -108,7 +108,7 @@ class GreatSageAvatar(QWidget):
     state-dependent glow effects layered on top.
     """
 
-    _IMG_PATH = Path(__file__).resolve().parent.parent.parent / "great-sage-transparent-clean.gif"
+    _IMG_PATH = Path(__file__).resolve().parent.parent.parent / "great-sage-cage.webp"
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -123,11 +123,11 @@ class GreatSageAvatar(QWidget):
         self._pulse_phase: float = 0.0
         self._speak_amplitude: float = 0.0
 
-        # Load animated GIF — scale to fit inside the 200×220 widget
+        # Load animated WebP — scale to fit inside the 200×220 widget
         self._movie: Optional[QMovie] = None
         self._current_frame: QPixmap = QPixmap()
-        gif_path = str(self._IMG_PATH)
-        self._movie = QMovie(gif_path)
+        img_path = str(self._IMG_PATH)
+        self._movie = QMovie(img_path)
         if self._movie and self._movie.isValid():
             self._movie.setCacheMode(QMovie.CacheMode.CacheAll)
             self._movie.frameChanged.connect(self._on_frame_changed)
@@ -140,7 +140,7 @@ class GreatSageAvatar(QWidget):
                     Qt.TransformationMode.SmoothTransformation,
                 )
         else:
-            logger.warning("Could not load GIF at %s — falling back to blank avatar", gif_path)
+            logger.warning("Could not load animated WebP at %s — falling back to blank avatar", img_path)
 
         # Animation timers
         self._bounce_timer = QTimer(self)
@@ -215,7 +215,7 @@ class GreatSageAvatar(QWidget):
         self.update()
 
     def _on_frame_changed(self) -> None:
-        """Update the current frame from the GIF animation."""
+        """Update the current frame from the WebP animation."""
         pixmap = self._movie.currentPixmap() if self._movie else QPixmap()
         if not pixmap.isNull():
             self._current_frame = pixmap.scaled(

@@ -192,6 +192,7 @@ def _run_overlay_thread(
     orch_handle: list,
     orch_ready: threading.Event,
     overlay_cfg: dict,
+    overlay_handle: list,
 ) -> None:
     """
     Run the PyQt6 overlay in its own thread.
@@ -212,6 +213,7 @@ def _run_overlay_thread(
             app = QApplication.instance() or QApplication(sys.argv)
             overlay = OverlayWidget(initial_x=x, initial_y=y)
             overlay.show()
+            overlay_handle[0] = overlay
 
         def _process_prompt(text: str) -> None:
             """Handle voice transcription result."""
@@ -358,9 +360,12 @@ def main() -> None:
     _orch_handle: list = [None]  # _orch_handle[0] = Orchestrator instance
     _orch_ready = threading.Event()
 
+    # Shared overlay handle — set by overlay thread, read by async main.
+    _overlay_handle: list = [None]  # _overlay_handle[0] = OverlayWidget instance
+
     overlay_thread = threading.Thread(
         target=_run_overlay_thread,
-        args=(_orch_handle, _orch_ready, overlay_cfg),
+        args=(_orch_handle, _orch_ready, overlay_cfg, _overlay_handle),
         daemon=True,
         name="overlay",
     )
@@ -376,7 +381,8 @@ def main() -> None:
 
         from src.orchestrator import Orchestrator
 
-        orch = Orchestrator(on_cutscene=lambda: overlay.cutscene_triggered.emit())
+        _ovl = _overlay_handle[0]
+        orch = Orchestrator(on_cutscene=lambda: (_ovl.cutscene_triggered.emit() if _ovl else None))
         _orch_handle[0] = orch
         _orch_ready.set()  # signal overlay thread that orchestrator is ready
         await orch.start()
