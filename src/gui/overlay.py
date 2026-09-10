@@ -841,6 +841,7 @@ class OverlayWidget(QWidget):
     hitl_requested = pyqtSignal(object)  # Emitted with HitlRequest
     hitl_response_received = pyqtSignal(str, object)  # (request_id, result_dict)
     response_received = pyqtSignal(str)  # Emitted when orchestrator returns a response
+    state_changed = pyqtSignal(str)  # Emitted when NPC state changes (for mic mute control)
     app_closing = pyqtSignal()  # Emitted on close
     force_offline_toggled = pyqtSignal(bool)  # Emitted when offline mode is toggled
     cutscene_triggered = pyqtSignal()  # Emitted when a skill executes
@@ -997,6 +998,7 @@ class OverlayWidget(QWidget):
     def set_state(self, state: NPCState) -> None:
         self._current_state = state
         self._avatar.set_state(state)
+        self.state_changed.emit(state.value)
         if state == NPCState.LISTENING:
             self._bubble.clear()
         elif state == NPCState.IDLE:

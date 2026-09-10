@@ -646,7 +646,11 @@ class Orchestrator:
 
                     # Trigger cutscene for high-impact skills
                     if tool_name in self.CUTSCENE_TOOLS and self._on_cutscene:
-                        threading.main_thread().run(self._on_cutscene)
+                        try:
+                            asyncio.get_running_loop().call_soon_threadsafe(self._on_cutscene)
+                        except RuntimeError:
+                            # No running loop (shouldn't happen in normal flow)
+                            self._on_cutscene()
                 except MCPToolError as exc:
                     tool_results.append({"tool": tool_name, "error": str(exc)})
 
@@ -696,9 +700,12 @@ class Orchestrator:
     def _post_hitl_to_gui(self, request) -> None:
         """Post a HITL request to the Qt GUI thread."""
         if self._on_hitl_request:
-            threading.main_thread().run(
-                lambda: self._on_hitl_request(request)
-            )
+            try:
+                asyncio.get_running_loop().call_soon_threadsafe(
+                    lambda: self._on_hitl_request(request)
+                )
+            except RuntimeError:
+                self._on_hitl_request(request)
 
     def handle_hitl_response(self, request_id: str, approved: bool, args: Optional[dict] = None) -> None:
         """Called from the Qt thread when the user approves/denies a HITL request."""

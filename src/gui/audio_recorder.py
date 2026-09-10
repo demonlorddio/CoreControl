@@ -170,6 +170,14 @@ class AudioRecorder:
         self._capture_thread: Optional[threading.Thread] = None
         self._process_thread: Optional[threading.Thread] = None
         self.is_recording: bool = False  # True while speech is accumulating
+        self._mic_muted: bool = False
+
+    # ── Mic Mute Control ────────────────────────────────────────────────────────
+
+    def set_mic_muted(self, muted: bool) -> None:
+        """Mute or unmute the microphone. When muted, incoming audio is discarded."""
+        self._mic_muted = muted
+        logger.info("Mic %s", "muted" if muted else "unmuted")
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -252,6 +260,9 @@ class AudioRecorder:
 
             if block is None:  # poison pill
                 break
+
+            if self._mic_muted:
+                continue
 
             is_speech = self._vad_detect(block)
 

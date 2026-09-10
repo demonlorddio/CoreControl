@@ -284,6 +284,12 @@ def _run_overlay_thread(
         overlay.prompt_submitted.connect(_on_prompt)
         overlay.response_received.connect(overlay.speak)
 
+        # Mute mic while bot is speaking/processing to prevent feedback loop
+        def _on_state_changed(state: str) -> None:
+            should_mute = state in ("processing", "speaking")
+            recorder.set_mic_muted(should_mute)
+        overlay.state_changed.connect(_on_state_changed)
+
         # Connect HITL signal
         def _on_hitl_request(request: HitlRequest) -> None:
             orch = orch_handle[0]
